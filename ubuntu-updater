@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# Definir algunos colores para que la salida sea más clara
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+NC='\033[0m' # Sin color
+
+# 1. Pedir contraseña antes de hacer nada
+echo -e "${CYAN}🔐 Solicitando permisos de administrador...${NC}"
+sudo -v
+
+# 2. Si el usuario cancela la contraseña (Ctrl+C), el script se detiene
+if [ $? -ne 0 ]; then
+	echo "❌ Actualización cancelada."
+	exit 1
+fi
+
+echo -e "\n${CYAN}🔄 1/6 - Actualizando lista de repositorios (APT)...${NC}"
+sudo apt update
+
+echo -e "${CYAN}📦 2/6 - Instalando actualizaciones del sistema (APT)...${NC}"
+sudo apt upgrade -y
+
+# Comprobar si Snap está instalado antes de intentar actualizar
+if command -v snap &>/dev/null; then
+	echo -e "${CYAN}🔄 3/6 - Actualizando paquetes Snap...${NC}"
+	sudo snap refresh
+else
+	echo -e "${CYAN}⏭️  3/6 - Snap no está instalado. Omitiendo...${NC}"
+fi
+
+# Comprobar si Flatpak está instalado antes de intentar actualizar
+if command -v flatpak &>/dev/null; then
+	echo -e "${CYAN}📦 4/6 - Actualizando paquetes Flatpak...${NC}"
+	flatpak update -y
+else
+	echo -e "${CYAN}⏭️  4/6 - Flatpak no está instalado. Omitiendo...${NC}"
+fi
+
+echo -e "${CYAN}🧹 5/6 - Eliminando paquetes y dependencias huérfanas (APT)...${NC}"
+sudo apt autoremove --purge -y
+sudo apt clean
+
+if command -v flatpak &>/dev/null; then
+	echo -e "${CYAN}🧹 6/6 - Eliminando dependencias sin uso (Flatpak)...${NC}"
+	flatpak remove --unused -y
+else
+	echo -e "${CYAN}⏭️  6/6 - Flatpak no está instalado. Omitiendo limpieza...${NC}"
+fi
+
+echo -e "${GREEN}✅ ¡Proceso completado! Tu sistema Ubuntu está totalmente actualizado y limpio.${NC}"

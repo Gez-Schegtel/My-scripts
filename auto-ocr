@@ -1,0 +1,40 @@
+#!/bin/bash
+
+# Verificar si se pasó al menos un archivo como argumento
+if [ "$#" -eq 0 ]; then
+    echo "❌ Error: No indicaste ningún archivo."
+    echo "Uso: auto_ocr archivo1.pdf [archivo2.pdf ...]"
+    echo "Tip: Puedes usar comodines, por ejemplo: auto_ocr *.pdf"
+    exit 1
+fi
+
+# Bucle para procesar cada archivo que le pases al script
+for archivo in "$@"; do
+    # Verificar que el archivo realmente existe y termina en .pdf
+    if [ ! -f "$archivo" ] || [[ "${archivo,,}" != *.pdf ]]; then
+        echo "⚠️ Saltando '$archivo': No existe o no es un archivo PDF."
+        continue
+    fi
+
+    # Crear el nombre de salida (reemplaza .pdf por _ocr.pdf)
+    nombre_salida="${archivo%.pdf}_ocr.pdf"
+
+    echo "======================================================"
+    echo "📄 Procesando: $archivo"
+    echo "💾 Se guardará como: $nombre_salida"
+    echo "======================================================"
+
+    # Tu comando estrella de ocrmypdf
+    ocrmypdf --deskew --clean --oversample 300 --force-ocr -l spa "$archivo" "$nombre_salida"
+
+    # Verificar si el comando fue exitoso
+    if [ $? -eq 0 ]; then
+        echo "✅ ¡Éxito! Archivo guardado: $nombre_salida"
+        echo ""
+    else
+        echo "❌ Error al intentar procesar: $archivo"
+        echo ""
+    fi
+done
+
+echo "🎉 ¡Todos los documentos han sido procesados!"

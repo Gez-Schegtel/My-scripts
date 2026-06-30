@@ -1,0 +1,50 @@
+#!/usr/bin/env zsh
+
+set -e
+setopt nullglob
+
+# 1. Construimos la lista de archivos a convertir
+archivos=()
+
+if (( $# > 0 )); then
+  # Si pasaste archivos por argumento: md2pdf a.md b.md
+  for archivo in "$@"; do
+    [[ -f "$archivo" ]] || continue
+    archivos+=("$archivo")
+  done
+else
+  # Si no pasaste nada: todos los .md del directorio
+  archivos=(*.md(.N))
+fi
+
+# 2. Si no hay archivos, salimos
+if (( ${#archivos[@]} == 0 )); then
+  echo "No se encontraron archivos Markdown para convertir."
+  exit 0
+fi
+
+# 3. Mostrar qué se va a convertir
+echo "Se van a convertir los siguientes archivos:"
+for archivo in "${archivos[@]}"; do
+  echo "  - $archivo -> ${archivo%.md}.pdf"
+done
+
+# 4. Pedir confirmación
+read "respuesta?¿Continuar? [s/N]: "
+case "$respuesta" in
+  s|S|y|Y)
+    echo "Iniciando conversión..."
+    ;;
+  *)
+    echo "Operación cancelada."
+    exit 1
+    ;;
+esac
+
+# 5. Ejecutar pandoc y mostrar mensajes por archivo
+for archivo in "${archivos[@]}"; do
+  pandoc "$archivo" -o "${archivo%.md}.pdf"
+  echo "✔ Generado: ${archivo%.md}.pdf"
+done
+
+echo "✅ Conversión completa."

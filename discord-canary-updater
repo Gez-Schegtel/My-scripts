@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Nombre del paquete
+PACKAGE="discord-canary"
+
+# URL de descarga
+DOWNLOAD_URL="https://discord.com/api/download/canary?platform=linux&format=deb"
+
+# Nombre del archivo temporal
+DEB_FILE="/tmp/discord-canary.deb"
+
+# Verificar si wget está instalado
+if ! command -v wget &>/dev/null; then
+	echo "❌ Error: wget no está instalado. Instálalo con:"
+	echo "   sudo apt install wget"
+	exit 1
+fi
+
+# Obtener la versión instalada (si existe)
+INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' $PACKAGE 2>/dev/null)
+
+# Descargar el archivo .deb temporalmente
+echo "🔄 Descargando la última versión de Discord Canary..."
+wget -O "$DEB_FILE" "$DOWNLOAD_URL" &>/dev/null
+
+# Verificar si la descarga fue exitosa
+if [[ $? -ne 0 ]]; then
+	echo "❌ Error: Falló la descarga del paquete."
+	exit 1
+fi
+
+# Obtener la versión del nuevo paquete
+NEW_VERSION=$(dpkg-deb --info "$DEB_FILE" | grep 'Version:' | awk '{print $2}')
+
+# Comparar versiones
+if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$NEW_VERSION" ]]; then
+	echo "✅ Discord Canary ya está en su última versión ($INSTALLED_VERSION). No es necesario actualizar."
+	rm -f "$DEB_FILE"
+	exit 0
+fi
+
+# Mostrar "ninguna" si el programa no estaba instalado previamente
+echo "📦 Se encontró una nueva versión: $NEW_VERSION (actual: ${INSTALLED_VERSION:-ninguna}). Procediendo con la actualización..."
+
+# Refrescar los permisos de sudo antes de empezar
+sudo -v
+
+# Instalar el paquete usando apt en vez de dpkg para resolver dependencias automáticamente.
+# DPkg::Lock::Timeout=120 le dice al script que si otro proceso está usando apt,
+# espere hasta 120 segundos en lugar de fallar instantáneamente.
+echo "⚙️ Instalando..."
+if sudo apt-get -o DPkg::Lock::Timeout=120 install -y "$DEB_FILE"; then
+	echo "✅ ¡Proceso completado! Discord Canary ha sido actualizado a la versión $NEW_VERSION."
+else
+	echo "❌ Error: La instalación falló debido a un error o bloqueo persistente."
+fi
+
+# Limpiar archivo temporal
+rm -f "$DEB_FILE"

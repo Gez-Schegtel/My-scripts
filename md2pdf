@@ -1,5 +1,28 @@
 #!/usr/bin/env zsh
 
+# ==============================================================================
+# SCRIPT: md2pdf
+# DESCRIPCIÓN: 
+#   Convierte archivos Markdown (.md) a formato PDF utilizando Pandoc.
+#   Es un script interactivo: si se le pasan archivos por argumento, convierte 
+#   solo esos. Si se ejecuta sin argumentos, detecta y procesa todos los 
+#   archivos .md del directorio actual. Siempre pide confirmación antes de 
+#   iniciar la conversión.
+#
+# USO:
+#   md2pdf                    (Detecta y convierte todos los .md de la carpeta)
+#   md2pdf archivo.md         (Convierte solo un archivo específico)
+#   md2pdf apunte1.md apunte2.md 
+#
+# DEPENDENCIAS REQUERIDAS:
+#   - zsh (El script está escrito específicamente para Z shell)
+#   - pandoc (El conversor universal de documentos)
+#   - Motor PDF para Pandoc (LaTeX/TexLive, necesario para exportar a PDF)
+#
+# Instalación de dependencias en Debian/Ubuntu:
+#   sudo apt install zsh pandoc texlive-latex-base texlive-fonts-recommended
+# ==============================================================================
+
 set -e
 setopt nullglob
 

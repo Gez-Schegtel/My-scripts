@@ -1,5 +1,24 @@
 #!/bin/bash
 
+# ==============================================================================
+# SCRIPT: ubuntu-updater
+# DESCRIPCIÓN:
+#   Automatiza y centraliza la actualización completa de un sistema Ubuntu/Debian.
+#   Solicita permisos de administrador (sudo) de forma segura al inicio y luego:
+#   1. Actualiza repositorios y paquetes de APT.
+#   2. Actualiza paquetes de Snap (si está instalado).
+#   3. Actualiza paquetes de Flatpak (si está instalado).
+#   4. Realiza una limpieza profunda de dependencias huérfanas y caché del sistema.
+#   Utiliza colores en la terminal para mostrar el progreso de manera amigable.
+#
+# USO:
+#   ubuntu-updater
+#
+# DEPENDENCIAS REQUERIDAS:
+#   - apt, sudo (Herramientas base del sistema).
+#   - snap, flatpak (Opcionales. El script verifica si existen antes de usarlos).
+# ==============================================================================
+
 # Definir algunos colores para que la salida sea más clara
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'

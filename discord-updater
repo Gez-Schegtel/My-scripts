@@ -1,56 +1,85 @@
 #!/bin/bash
 
+# ==============================================================================
+# SCRIPT: discord-updater
+# DESCRIPCIÓN:
+#   Descarga e instala automáticamente la última versión de Discord (Estable) (.deb).
+#
+#   [⚡ OPTIMIZACIÓN INCORPORADA]: Inspecciona los servidores de Discord ANTES
+#   de descargar. Si la versión disponible es igual a la instalada, el script
+#   finaliza inmediatamente en milisegundos, ahorrando tiempo y datos de red.
+#
+#   Incluye gestión segura de sudo, prevención de bloqueos de APT (timeout),
+#   y autolimpieza garantizada de archivos temporales mediante 'trap'.
+#
+# USO:
+#   discord-updater
+#
+# DEPENDENCIAS REQUERIDAS:
+#   - wget, grep, dpkg, apt (Herramientas estándar preinstaladas en Ubuntu/Debian).
+# ==============================================================================
+
 # Nombre del paquete
 PACKAGE="discord"
 
 # URL de descarga
-DOWNLOAD_URL="https://discord.com/api/download?platform=linux"
+DOWNLOAD_URL="https://discord.com/api/download?platform=linux&format=deb"
 
 # Nombre del archivo temporal
 DEB_FILE="/tmp/discord.deb"
 
-# Verificar si wget está instalado
+# 1. Configurar autolimpieza (Se ejecuta automáticamente al salir o cancelar)
+trap 'rm -f "$DEB_FILE"' EXIT
+
+# 2. Verificar si wget está instalado
 if ! command -v wget &>/dev/null; then
 	echo "❌ Error: wget no está instalado. Instálalo con:"
 	echo "   sudo apt install wget"
 	exit 1
 fi
 
-# Obtener la versión instalada (si existe)
+# 3. Obtener la versión instalada (si existe)
 INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' $PACKAGE 2>/dev/null)
 
-# Descargar el archivo .deb temporalmente
-echo "🔄 Descargando la última versión de Discord..."
-wget -O "$DEB_FILE" "$DOWNLOAD_URL" &>/dev/null
+# 4. Inspeccionar el servidor para obtener la nueva versión (SIN descargar el archivo)
+echo "🔍 Consultando el servidor de Discord..."
+# Usamos --spider para leer solo los encabezados de red sin descargar el archivo real
+NEW_VERSION=$(wget --spider --server-response "$DOWNLOAD_URL" 2>&1 | grep -i 'Location:' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -n 1)
 
-# Verificar si la descarga fue exitosa
-if [[ $? -ne 0 ]]; then
-	echo "❌ Error: Falló la descarga del paquete."
+if [[ -z "$NEW_VERSION" ]]; then
+	echo "❌ Error: No se pudo obtener la información de la versión desde el servidor."
 	exit 1
 fi
 
-# Obtener la versión del nuevo paquete
-NEW_VERSION=$(dpkg-deb --info "$DEB_FILE" | grep 'Version:' | awk '{print $2}')
-
-# Comparar versiones
+# 5. Comparar versiones ANTES de descargar
 if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$NEW_VERSION" ]]; then
-	echo "✅ Discord ya está en su última versión ($INSTALLED_VERSION). No es necesario actualizar."
-	rm -f "$DEB_FILE"
+	echo "✅ Discord ya está en su última versión ($INSTALLED_VERSION)."
+	echo "🚫 Operación cancelada: No es necesario descargar ningún archivo."
 	exit 0
 fi
 
-echo "📦 Se encontró una nueva versión: $NEW_VERSION (actual: $INSTALLED_VERSION). Procediendo con la actualización..."
+# Mostrar "ninguna" si el programa no estaba instalado previamente
+echo "📦 Se encontró una nueva versión: $NEW_VERSION (actual: ${INSTALLED_VERSION:-ninguna})."
 
-# Instalar/actualizar el paquete
-sudo dpkg -i "$DEB_FILE"
-
-# Corregir dependencias si es necesario
-if [[ $? -ne 0 ]]; then
-	echo "⚙️ Reparando dependencias..."
-	sudo apt-get install -f -y
+# 6. Descargar el archivo .deb
+echo "🔄 Descargando el paquete de Discord v$NEW_VERSION..."
+if ! wget -q --show-progress -O "$DEB_FILE" "$DOWNLOAD_URL"; then
+	echo "❌ Error: Falló la conexión o la descarga del paquete."
+	exit 1
 fi
 
-# Limpiar archivo temporal
-rm -f "$DEB_FILE"
+# 7. Refrescar/Pedir los permisos de sudo antes de empezar la instalación
+echo "🔐 Solicitando permisos para instalar..."
+if ! sudo -v; then
+	echo "❌ Actualización cancelada por el usuario."
+	exit 1
+fi
 
-echo "✅ ¡Proceso completado! Discord ha sido actualizado a la versión $NEW_VERSION."
+# 8. Instalar el paquete usando apt
+echo "⚙️ Procediendo con la actualización..."
+if sudo apt-get -o DPkg::Lock::Timeout=120 install -y "$DEB_FILE"; then
+	echo "✅ ¡Proceso completado! Discord ha sido actualizado a la versión $NEW_VERSION."
+else
+	echo "❌ Error: La instalación falló debido a un error de dependencias o bloqueo persistente."
+	exit 1
+fi

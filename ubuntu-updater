@@ -4,41 +4,53 @@
 # SCRIPT: ubuntu-updater
 # DESCRIPCIÓN:
 #   Automatiza y centraliza la actualización completa de un sistema Ubuntu/Debian.
-#   Solicita permisos de administrador (sudo) de forma segura al inicio y luego:
-#   1. Actualiza repositorios y paquetes de APT.
-#   2. Actualiza paquetes de Snap (si está instalado).
-#   3. Actualiza paquetes de Flatpak (si está instalado).
-#   4. Realiza una limpieza profunda de dependencias huérfanas y caché del sistema.
-#   Utiliza colores en la terminal para mostrar el progreso de manera amigable.
+#
+#   [⚡ MEJORAS INCORPORADAS]:
+#   - Verifica la conexión a Internet antes de comenzar (Falla rápido).
+#   - Mantiene la sesión 'sudo' activa durante toda la ejecución (Keep-Alive).
+#   - Previene fallos por bloqueos temporales de APT (DPkg::Lock::Timeout).
+#   - Detecta y avisa si se requiere un reinicio del sistema al finalizar.
 #
 # USO:
 #   ubuntu-updater
 #
 # DEPENDENCIAS REQUERIDAS:
-#   - apt, sudo (Herramientas base del sistema).
+#   - apt, sudo, ping (Herramientas base del sistema).
 #   - snap, flatpak (Opcionales. El script verifica si existen antes de usarlos).
 # ==============================================================================
 
-# Definir algunos colores para que la salida sea más clara
+# Definir colores para una salida clara y elegante
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m' # Sin color
 
-# 1. Pedir contraseña antes de hacer nada
-echo -e "${CYAN}🔐 Solicitando permisos de administrador...${NC}"
-sudo -v
-
-# 2. Si el usuario cancela la contraseña (Ctrl+C), el script se detiene
-if [ $? -ne 0 ]; then
-	echo "❌ Actualización cancelada."
+echo -e "${CYAN}🌐 Verificando conexión a internet...${NC}"
+if ! ping -c 1 8.8.8.8 &>/dev/null; then
+	echo -e "${RED}❌ Error: No hay conexión a internet. Revisa tu red e intenta de nuevo.${NC}"
 	exit 1
 fi
 
+echo -e "${CYAN}🔐 Solicitando permisos de administrador...${NC}"
+# Pedir contraseña de sudo y validar
+if ! sudo -v; then
+	echo -e "${RED}❌ Actualización cancelada por el usuario.${NC}"
+	exit 1
+fi
+
+# TRUCO PRO: Mantener el ticket de sudo vivo en segundo plano hasta que el script termine
+while true; do
+	sudo -n true
+	sleep 60
+	kill -0 "$$" || exit
+done 2>/dev/null &
+
 echo -e "\n${CYAN}🔄 1/6 - Actualizando lista de repositorios (APT)...${NC}"
-sudo apt update
+sudo apt-get -o DPkg::Lock::Timeout=120 update
 
 echo -e "${CYAN}📦 2/6 - Instalando actualizaciones del sistema (APT)...${NC}"
-sudo apt upgrade -y
+sudo apt-get -o DPkg::Lock::Timeout=120 upgrade -y
 
 # Comprobar si Snap está instalado antes de intentar actualizar
 if command -v snap &>/dev/null; then
@@ -57,8 +69,8 @@ else
 fi
 
 echo -e "${CYAN}🧹 5/6 - Eliminando paquetes y dependencias huérfanas (APT)...${NC}"
-sudo apt autoremove --purge -y
-sudo apt clean
+sudo apt-get -o DPkg::Lock::Timeout=120 autoremove --purge -y
+sudo apt-get clean
 
 if command -v flatpak &>/dev/null; then
 	echo -e "${CYAN}🧹 6/6 - Eliminando dependencias sin uso (Flatpak)...${NC}"
@@ -67,4 +79,10 @@ else
 	echo -e "${CYAN}⏭️  6/6 - Flatpak no está instalado. Omitiendo limpieza...${NC}"
 fi
 
-echo -e "${GREEN}✅ ¡Proceso completado! Tu sistema Ubuntu está totalmente actualizado y limpio.${NC}"
+echo -e "${GREEN}✅ ¡Proceso completado! Tu sistema está totalmente actualizado y limpio.${NC}"
+
+# Detectar si el sistema necesita un reinicio (ej: actualización del Kernel)
+if [ -f /var/run/reboot-required ]; then
+	echo -e "\n${YELLOW}⚠️  NOTA IMPORTANTE: Se instalaron actualizaciones críticas del núcleo (Kernel)."
+	echo -e "   Se recomienda reiniciar el sistema para aplicar los cambios.${NC}"
+fi

@@ -2,29 +2,55 @@
 
 # ==============================================================================
 # SCRIPT: md2pdf
-# DESCRIPCIÓN: 
+# DESCRIPCIÓN:
 #   Convierte archivos Markdown (.md) a formato PDF utilizando Pandoc.
-#   Es un script interactivo: si se le pasan archivos por argumento, convierte 
-#   solo esos. Si se ejecuta sin argumentos, detecta y procesa todos los 
-#   archivos .md del directorio actual. Siempre pide confirmación antes de 
+#   Es un script interactivo: si se le pasan archivos por argumento, convierte
+#   solo esos. Si se ejecuta sin argumentos, detecta y procesa todos los
+#   archivos .md del directorio actual. Siempre pide confirmación antes de
 #   iniciar la conversión.
+#
+#   Si xelatex está instalado, lo usa para generar el PDF. El motor por
+#   defecto de Pandoc (pdflatex) no genera NADA si el documento tiene letras
+#   griegas (α), símbolos como ✓ o emojis; xelatex los acepta. Los emojis
+#   igual no se ven (la fuente no los tiene), pero no impiden generar el PDF.
+#
+#   Si un archivo falla, sigue con los demás y al final informa cuáles no se
+#   pudieron convertir.
 #
 # USO:
 #   md2pdf                    (Detecta y convierte todos los .md de la carpeta)
 #   md2pdf archivo.md         (Convierte solo un archivo específico)
-#   md2pdf apunte1.md apunte2.md 
+#   md2pdf apunte1.md apunte2.md
+#
+# CÓDIGO DE SALIDA:
+#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - zsh (El script está escrito específicamente para Z shell)
 #   - pandoc (El conversor universal de documentos)
-#   - Motor PDF para Pandoc (LaTeX/TexLive, necesario para exportar a PDF)
+#   - LaTeX para exportar a PDF. Con solo texlive-latex-base fallan los
+#     documentos con tablas o bloques de código: hace falta
+#     texlive-latex-recommended. texlive-xetex agrega el motor xelatex, y
+#     lmodern es la fuente que Pandoc usa por defecto (sin ella, no genera
+#     ningún PDF).
 #
 # Instalación de dependencias en Debian/Ubuntu:
-#   sudo apt install zsh pandoc texlive-latex-base texlive-fonts-recommended
+#   sudo apt install zsh pandoc texlive-latex-recommended texlive-fonts-recommended texlive-xetex lmodern
 # ==============================================================================
 
-set -e
-setopt nullglob
+setopt extended_glob
+
+if (( ! $+commands[pandoc] )); then
+  echo "❌ Error: pandoc no está instalado. Instalalo con:"
+  echo "   sudo apt install pandoc texlive-latex-recommended texlive-fonts-recommended texlive-xetex lmodern"
+  exit 1
+fi
+
+# Motor PDF: xelatex si está disponible; si no, el de Pandoc por defecto
+motor=()
+if (( $+commands[xelatex] )); then
+  motor=(--pdf-engine=xelatex)
+fi
 
 # 1. Construimos la lista de archivos a convertir
 archivos=()
@@ -32,12 +58,17 @@ archivos=()
 if (( $# > 0 )); then
   # Si pasaste archivos por argumento: md2pdf a.md b.md
   for archivo in "$@"; do
-    [[ -f "$archivo" ]] || continue
-    archivos+=("$archivo")
+    if [[ ! -f "$archivo" ]]; then
+      echo "⚠️ Saltando '$archivo': no existe."
+    elif [[ "${(L)archivo:e}" != (md|markdown) ]]; then
+      echo "⚠️ Saltando '$archivo': no es un archivo Markdown (.md)."
+    else
+      archivos+=("$archivo")
+    fi
   done
 else
-  # Si no pasaste nada: todos los .md del directorio
-  archivos=(*.md(.N))
+  # Si no pasaste nada: todos los .md del directorio (también .MD o .markdown)
+  archivos=( *.(#i)(md|markdown)(N.) )
 fi
 
 # 2. Si no hay archivos, salimos
@@ -46,10 +77,10 @@ if (( ${#archivos[@]} == 0 )); then
   exit 0
 fi
 
-# 3. Mostrar qué se va a convertir
+# 3. Mostrar qué se va a convertir (el PDF reemplaza la extensión .md)
 echo "Se van a convertir los siguientes archivos:"
 for archivo in "${archivos[@]}"; do
-  echo "  - $archivo -> ${archivo%.md}.pdf"
+  echo "  - $archivo -> ${archivo:r}.pdf"
 done
 
 # 4. Pedir confirmación
@@ -60,14 +91,25 @@ case "$respuesta" in
     ;;
   *)
     echo "Operación cancelada."
-    exit 1
+    exit 0
     ;;
 esac
 
-# 5. Ejecutar pandoc y mostrar mensajes por archivo
+# 5. Ejecutar pandoc y mostrar mensajes por archivo. Si uno falla, se sigue
+#    con los demás ("--" por si algún nombre empieza con "-").
+fallidos=()
 for archivo in "${archivos[@]}"; do
-  pandoc "$archivo" -o "${archivo%.md}.pdf"
-  echo "✔ Generado: ${archivo%.md}.pdf"
+  salida="${archivo:r}.pdf"
+  if pandoc "${motor[@]}" --output="$salida" -- "$archivo"; then
+    echo "✔ Generado: $salida"
+  else
+    echo "❌ Error al convertir: $archivo"
+    fallidos+=("$archivo")
+  fi
 done
 
+if (( ${#fallidos[@]} > 0 )); then
+  echo "⚠️ No se pudieron convertir ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}"
+  exit 1
+fi
 echo "✅ Conversión completa."

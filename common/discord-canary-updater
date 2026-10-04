@@ -25,11 +25,13 @@ PACKAGE="discord-canary"
 # URL de descarga
 DOWNLOAD_URL="https://discord.com/api/download/canary?platform=linux&format=deb"
 
-# Nombre del archivo temporal
-DEB_FILE="/tmp/discord-canary.deb"
-
-# 1. Configurar autolimpieza (Se ejecuta automáticamente al salir o cancelar)
-trap 'rm -f "$DEB_FILE"' EXIT
+# 1. Carpeta temporal propia (nombre impredecible, solo para este proceso) y
+#    autolimpieza (se ejecuta automáticamente al salir o cancelar).
+#    Permisos 755 para que APT pueda leer el paquete con su usuario "_apt".
+TMP_DIR=$(mktemp -d) || exit 1
+chmod 755 "$TMP_DIR"
+DEB_FILE="$TMP_DIR/discord-canary.deb"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 # 2. Verificar si wget está instalado
 if ! command -v wget &>/dev/null; then
@@ -38,8 +40,13 @@ if ! command -v wget &>/dev/null; then
 	exit 1
 fi
 
-# 3. Obtener la versión instalada (si existe)
-INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' $PACKAGE 2>/dev/null)
+# 3. Obtener la versión instalada (si existe). Solo cuenta si el paquete está
+#    realmente instalado: si se desinstaló sin purgar ("apt remove"), dpkg
+#    todavía recuerda su versión aunque el programa ya no esté.
+INSTALLED_VERSION=""
+if [[ $(dpkg-query -W -f='${db:Status-Status}' "$PACKAGE" 2>/dev/null) == installed ]]; then
+	INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' "$PACKAGE")
+fi
 
 # 4. Inspeccionar el servidor para obtener la nueva versión (SIN descargar el archivo)
 echo "🔍 Consultando el servidor de Discord..."
@@ -67,6 +74,9 @@ if ! wget -q --show-progress -O "$DEB_FILE" "$DOWNLOAD_URL"; then
 	echo "❌ Error: Falló la conexión o la descarga del paquete."
 	exit 1
 fi
+
+# Que APT pueda leer el paquete aunque tu umask cree archivos privados
+chmod 644 "$DEB_FILE"
 
 # 7. Refrescar/Pedir los permisos de sudo antes de empezar la instalación
 echo "🔐 Solicitando permisos para instalar..."

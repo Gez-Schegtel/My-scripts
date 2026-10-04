@@ -9,10 +9,22 @@
 #   y fuerza la creación de una nueva capa de texto en español).
 #   Genera un nuevo archivo dejando intacto el original (agrega "_ocr.pdf").
 #
+#   Saltea los archivos que ya son resultados de auto-ocr (*_ocr.pdf) y los
+#   que ya tienen su resultado, así podés volver a ejecutarlo sobre la misma
+#   carpeta sin repetir trabajo. Para procesar uno de nuevo, borrá su _ocr.pdf.
+#
+#   Nota: --force-ocr convierte cada página en imagen. Es lo ideal para
+#   escaneos, pero en un PDF que ya tiene texto digital (no escaneado) empeora
+#   la calidad y aumenta el tamaño.
+#
 # USO:
 #   auto-ocr archivo.pdf
 #   auto-ocr archivo1.pdf archivo2.pdf
 #   auto-ocr *.pdf (para procesar todos los PDFs de una carpeta)
+#
+# CÓDIGO DE SALIDA:
+#   0 si no hubo errores (aunque se haya salteado algún archivo), 1 si alguno
+#   falló o no se indicó ningún archivo.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - ocrmypdf
@@ -26,38 +38,71 @@
 # Verificar si se pasó al menos un archivo como argumento
 if [ "$#" -eq 0 ]; then
 	echo "❌ Error: No indicaste ningún archivo."
-	echo "Uso: auto_ocr archivo1.pdf [archivo2.pdf ...]"
-	echo "Tip: Puedes usar comodines, por ejemplo: auto_ocr *.pdf"
+	echo "Uso: auto-ocr archivo1.pdf [archivo2.pdf ...]"
+	echo "Tip: Podés usar comodines, por ejemplo: auto-ocr *.pdf"
 	exit 1
 fi
 
+procesados=0
+fallidos=0
+salteados=0
+
 # Bucle para procesar cada archivo que le pases al script
 for archivo in "$@"; do
-	# Verificar que el archivo realmente existe y termina en .pdf
+	# Verificar que el archivo realmente existe y termina en .pdf (o .PDF)
 	if [ ! -f "$archivo" ] || [[ "${archivo,,}" != *.pdf ]]; then
 		echo "⚠️ Saltando '$archivo': No existe o no es un archivo PDF."
+		salteados=$((salteados + 1))
+		continue
+	fi
+
+	# Nombre sin la extensión, sea .pdf o .PDF
+	base="${archivo%.*}"
+
+	# No volver a procesar un resultado de auto-ocr (evita libro_ocr_ocr.pdf)
+	if [[ "${base,,}" == *_ocr ]]; then
+		echo "⏭️ Saltando '$archivo': ya es un resultado de auto-ocr."
+		salteados=$((salteados + 1))
 		continue
 	fi
 
 	# Crear el nombre de salida (reemplaza .pdf por _ocr.pdf)
-	nombre_salida="${archivo%.pdf}_ocr.pdf"
+	nombre_salida="${base}_ocr.pdf"
+
+	# No pisar un resultado anterior
+	if [ -e "$nombre_salida" ]; then
+		echo "⏭️ Saltando '$archivo': ya existe '$nombre_salida' (borralo si querés procesarlo de nuevo)."
+		salteados=$((salteados + 1))
+		continue
+	fi
 
 	echo "======================================================"
 	echo "📄 Procesando: $archivo"
 	echo "💾 Se guardará como: $nombre_salida"
 	echo "======================================================"
 
-	# Comando estrella de ocrmypdf
-	ocrmypdf --deskew --clean --oversample 300 --force-ocr -l spa "$archivo" "$nombre_salida"
-
-	# Verificar si el comando fue exitoso
-	if [ $? -eq 0 ]; then
+	# Comando estrella de ocrmypdf ("--" por si el nombre empieza con "-")
+	if ocrmypdf --deskew --clean --oversample 300 --force-ocr -l spa -- "$archivo" "$nombre_salida"; then
 		echo "✅ ¡Éxito! Archivo guardado: $nombre_salida"
-		echo ""
+		procesados=$((procesados + 1))
 	else
 		echo "❌ Error al intentar procesar: $archivo"
-		echo ""
+		fallidos=$((fallidos + 1))
 	fi
+	echo ""
 done
 
-echo "🎉 ¡Todos los documentos han sido procesados!"
+# Resumen final con lo que realmente pasó
+resumen="$procesados procesado(s)"
+if ((fallidos > 0)); then
+	resumen+=", $fallidos con error"
+fi
+if ((salteados > 0)); then
+	resumen+=", $salteados salteado(s)"
+fi
+
+if ((fallidos > 0)); then
+	echo "⚠️ Terminado con errores: $resumen."
+	exit 1
+fi
+echo "🎉 Listo: $resumen."

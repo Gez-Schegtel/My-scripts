@@ -35,7 +35,9 @@
 #   Ejecutalo como usuario normal (NO con sudo): pide la contraseña al inicio.
 #   Tu usuario tiene que poder usar sudo (en Debian no siempre viene
 #   configurado; ver más abajo). En modo -y sin terminal (por ejemplo, una
-#   tarea programada), sudo tiene que poder ejecutarse sin contraseña.
+#   tarea programada), sudo tiene que poder ejecutarse sin contraseña. Además,
+#   sin una sesión abierta Flatpak no tiene permiso para actualizar las apps
+#   instaladas para todo el sistema: ese paso puede fallar.
 #
 # PASOS
 #   0. (Si hace falta) Repara una ejecución anterior que quedó interrumpida.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # SCRIPT:  ubuntu-updater
-# VERSIÓN: 2.1
+# VERSIÓN: 2.2
 #
 # DESCRIPCIÓN
 #   Actualiza por completo un sistema Ubuntu DENTRO de la versión instalada:
@@ -28,10 +28,10 @@
 #   1. Actualiza la lista de repositorios (APT).
 #   2. Descarga, confirma e instala actualizaciones del sistema y kernel (APT).
 #   3. Actualiza paquetes Snap.
-#   4. Descarga, confirma y aplica actualizaciones de Flatpak.
+#   4. Actualiza Flatpak (con su propia lista de cambios y confirmación).
 #   5. Actualiza firmware (BIOS/UEFI, SSD, periféricos) con fwupd.
 #   6. Elimina paquetes huérfanos y vacía la caché de APT.
-#   7. Elimina runtimes de Flatpak que ninguna aplicación usa (sin preguntar).
+#   7. Elimina runtimes de Flatpak que ninguna aplicación usa.
 #   Al final informa errores, si hace falta reiniciar y si hay versión nueva.
 #
 # SEGURIDAD
@@ -54,6 +54,8 @@
 #   Requeridas: bash 4.4+, apt-get, dpkg, sudo, flock, timeout (vienen con Ubuntu).
 #   Opcionales: snap, flatpak, fwupdmgr, systemd-inhibit, do-release-upgrade.
 #               Si alguna no está instalada, su paso se omite.
+#               python3 (viene con Ubuntu): para separar las actualizaciones de
+#               firmware que se pueden instalar de las que no.
 # ==============================================================================
 
 set -uo pipefail
@@ -152,12 +154,14 @@ if ((INCLUDE_PHASED)); then
 	APT_OPTS+=(-o APT::Get::Always-Include-Phased-Updates=true)
 fi
 
-# En modo -y: sin diálogos de configuración (debconf) ni de reinicio de
-# servicios (needrestart), y opcionalmente conservando la configuración propia.
+# En modo -y: sin diálogos de configuración (debconf), de reinicio de
+# servicios (needrestart) ni de novedades de paquetes (apt-listchanges, si
+# está instalado), y opcionalmente conservando la configuración propia.
 NONINTERACTIVE=()
 DPKG_CONF_OPTS=()
 if ((ASSUME_YES)); then
-	NONINTERACTIVE=(env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a)
+	NONINTERACTIVE=(env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+		APT_LISTCHANGES_FRONTEND=none)
 	if ((KEEP_CONFIG_ON_YES)); then
 		DPKG_CONF_OPTS=(--force-confdef --force-confold)
 		APT_OPTS+=(-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
@@ -168,8 +172,11 @@ APT_CMD=("${NONINTERACTIVE[@]}" apt-get)
 # ------------------------------------------------------------------------------
 # LIMPIEZA AL SALIR Y MANEJO DE INTERRUPCIONES
 # ------------------------------------------------------------------------------
-# Se ejecuta siempre al terminar, sea como sea: restaura la terminal y
-# detiene el proceso que mantiene activo sudo.
+# Carpeta temporal para guardar los mensajes de error de algunos comandos
+TMP_DIR=$(mktemp -d)
+
+# Se ejecuta siempre al terminar, sea como sea: restaura la terminal,
+# detiene el proceso que mantiene activo sudo y borra la carpeta temporal.
 cleanup() {
 	if [[ -n $STTY_SAVED ]]; then
 		stty "$STTY_SAVED" 2>/dev/null
@@ -177,6 +184,7 @@ cleanup() {
 	if [[ -n $KEEPALIVE_PID ]]; then
 		kill "$KEEPALIVE_PID" 2>/dev/null
 	fi
+	rm -rf "$TMP_DIR"
 }
 
 # Ctrl+C (fuera de fases críticas), cierre de terminal o kill: se detiene
@@ -241,6 +249,85 @@ apt_pending() {
 		return 1
 	fi
 	grep -cE '^(Inst|Remv|Purg) ' <<<"$out" || true
+}
+
+# Ejecuta un comando con su salida de siempre en la terminal (idioma,
+# colores, barras de progreso) y guarda además una copia de sus mensajes de
+# error en el archivo indicado, para poder analizarlos después. Solo los
+# errores pasan por tee: la salida normal va directo a la terminal, así el
+# comando sabe que está en una y muestra su interfaz completa.
+run_keep_errors() {
+	local errfile=$1
+	shift
+	{ "$@" 2>&1 1>&3 3>&- | tee "$errfile" >&2; } 3>&1
+}
+
+# Ejecuta un comando de Flatpak con su interfaz de siempre. En modo
+# interactivo, Flatpak muestra la lista de cambios y pide su propia
+# confirmación; solo con -y acepta todo sin preguntar.
+#   Uso: run_flatpak "descripción" "nombre si se omite" subcomando [args...]
+# Si rechazás la confirmación, Flatpak termina con código de error pero sin
+# ningún mensaje (un fallo real siempre muestra uno): eso se registra como
+# omitido, no como fallo.
+run_flatpak() {
+	local desc=$1 skip_name=$2 rc=0 yes=()
+	shift 2
+	if ((ASSUME_YES)); then
+		yes=(-y)
+	fi
+	run_keep_errors "$TMP_DIR/flatpak.err" flatpak "$@" "${yes[@]}" || rc=$?
+	stop_if_interrupted "$rc"
+	if ((rc == 0)); then
+		return 0
+	fi
+	if grep -qi 'error' "$TMP_DIR/flatpak.err"; then
+		error "❌ Falló: $desc"
+		FAILED+=("$desc")
+	else
+		warn "   Omitido: $skip_name."
+		SKIPPED+=("$skip_name")
+	fi
+	return 1
+}
+
+# Clasifica las actualizaciones de firmware que ofrece fwupd (recibe el JSON
+# de "fwupdmgr get-updates --json") e imprime una línea por dispositivo:
+#   OK|BLOQUEADA <tab> nombre <tab> versión actual <tab> versión nueva <tab> motivo
+# BLOQUEADA = fwupd la ofrece pero no puede instalarla en este equipo (el
+# dispositivo tiene un error de actualización, y fwupd la saltea en silencio).
+fw_classify() {
+	python3 -c '
+import json, sys
+try:
+    devices = json.load(sys.stdin).get("Devices", [])
+except ValueError:
+    sys.exit(1)
+for d in devices:
+    releases = d.get("Releases") or []
+    if not releases:
+        continue
+    why = d.get("UpdateError", "")
+    print("\t".join([
+        "BLOQUEADA" if why else "OK",
+        d.get("Name", "?"),
+        d.get("Version", "?"),
+        releases[0].get("Version", "?"),
+        why,
+    ]))
+'
+}
+
+# Pide confirmación e instala las actualizaciones de firmware (fase crítica).
+# La pregunta la hace confirm() (en modo -y responde "sí" sola). El -y de
+# fwupdmgr es para que fwupd no vuelva a preguntar ya dentro de la fase
+# crítica, donde Ctrl+C está desactivado. APT hace lo mismo en el paso 2.
+fw_install() {
+	if confirm "¿Instalar estas actualizaciones de firmware?"; then
+		critical "fwupdmgr update" \
+			fwupdmgr update -y --no-reboot-check --no-unreported-check && FW_UPDATED=1
+	else
+		SKIPPED+=("firmware")
+	fi
 }
 
 # Guardar la configuración de la terminal (solo si hay una terminal real)
@@ -422,27 +509,14 @@ fi
 # ==============================================================================
 # PASO 4: FLATPAK
 # ==============================================================================
-# Igual que APT: primero se DESCARGA (--no-deploy) mostrando la lista completa
-# de cambios, incluidas las extensiones nuevas que algunas apps necesitan
-# (por ejemplo, drivers gráficos), y tras confirmar se APLICA (--no-pull).
-# Interrumpir es seguro: Flatpak aplica cada actualización de forma atómica.
+# Flatpak se ejecuta directamente en la terminal, con su interfaz de siempre:
+# muestra la lista de cambios, pide confirmación (salvo en modo -y) y muestra
+# el progreso. Interrumpir es seguro: aplica cada actualización de forma
+# atómica.
 echo
 if command -v flatpak >/dev/null; then
 	info "📦 4/7 - Paquetes Flatpak..."
-	fp_rc=0
-	fp_out=$(LC_ALL=C flatpak update --no-deploy -y 2>&1 | tee /dev/stderr) || fp_rc=$?
-	stop_if_interrupted "$fp_rc"
-	if ((fp_rc != 0)); then
-		error "❌ Falló: flatpak update (descarga)"
-		FAILED+=("flatpak update (descarga)")
-	elif grep -q 'Nothing to do' <<<"$fp_out"; then
-		info "   Todos los Flatpak están al día."
-	elif confirm "¿Aplicar las actualizaciones de Flatpak listadas arriba?"; then
-		run "flatpak update" flatpak update --no-pull -y
-	else
-		warn "   Actualización de Flatpak omitida. Lo descargado se aplicará la próxima vez."
-		SKIPPED+=("Flatpak")
-	fi
+	run_flatpak "flatpak update" "actualizaciones de Flatpak" update
 else
 	info "⏭️  4/7 - Flatpak no está instalado. Omitiendo..."
 fi
@@ -452,6 +526,12 @@ fi
 # ==============================================================================
 # fwupd no separa descarga e instalación, así que toda la actualización es
 # fase crítica. Nunca reinicia solo: si instala algo, se avisa al final.
+#
+# fwupd a veces ofrece actualizaciones que no puede instalar en este equipo
+# (por ejemplo, las de Secure Boot cuando el firmware no informa su espacio
+# libre) y al "instalarlas" las saltea sin avisar. Por eso se separan: solo
+# se pregunta por las que se pueden instalar, y las otras se muestran aparte.
+#
 # --no-unreported-check evita la pregunta sobre enviar informes a LVFS, y
 # </dev/null impide que las consultas esperen una respuesta del teclado.
 echo
@@ -461,16 +541,38 @@ if command -v fwupdmgr >/dev/null; then
 	sudo fwupdmgr refresh --force </dev/null >/dev/null 2>&1 || fw_rc=$?
 	stop_if_interrupted "$fw_rc"
 	fw_rc=0
-	fw_list=$(sudo fwupdmgr get-updates --no-unreported-check </dev/null 2>/dev/null) || fw_rc=$?
+	fw_json=$(sudo fwupdmgr get-updates --json --no-unreported-check </dev/null 2>/dev/null) || fw_rc=$?
 	stop_if_interrupted "$fw_rc"
 	case $fw_rc in
 	0)
-		sed 's/^/   /' <<<"$fw_list"
-		if confirm "¿Instalar estas actualizaciones de firmware?"; then
-			critical "fwupdmgr update" \
-				fwupdmgr update -y --no-reboot-check --no-unreported-check && FW_UPDATED=1
+		if command -v python3 >/dev/null && fw_rows=$(fw_classify <<<"$fw_json"); then
+			fw_ok=() fw_blocked=()
+			while IFS=$'\t' read -r state name cur new why; do
+				[[ -n $state ]] || continue
+				if [[ $state == OK ]]; then
+					fw_ok+=("$name: $cur → $new")
+				else
+					fw_blocked+=("$name: $cur → $new ($why)")
+				fi
+			done <<<"$fw_rows"
+			if ((${#fw_ok[@]} > 0)); then
+				info "   Actualizaciones disponibles:"
+				printf '   • %s\n' "${fw_ok[@]}"
+			fi
+			if ((${#fw_blocked[@]} > 0)); then
+				warn "   fwupd ofrece estas actualizaciones, pero no puede instalarlas en este equipo:"
+				printf '   • %s\n' "${fw_blocked[@]}"
+			fi
+			if ((${#fw_ok[@]} > 0)); then
+				fw_install
+			else
+				info "   No hay actualizaciones de firmware que se puedan instalar."
+			fi
 		else
-			SKIPPED+=("firmware")
+			# Sin python3 no se puede saber cuáles se pueden instalar: se
+			# muestra la lista completa de fwupd.
+			sudo fwupdmgr get-updates --no-unreported-check </dev/null 2>/dev/null | sed 's/^/   /'
+			fw_install
 		fi
 		;;
 	2) info "   El firmware está al día (o no hay dispositivos compatibles)." ;;
@@ -513,11 +615,12 @@ fi
 # ==============================================================================
 # PASO 7: LIMPIEZA DE FLATPAK
 # ==============================================================================
-# Sin confirmación: solo quita runtimes que ninguna app instalada usa; si una
-# app los vuelve a necesitar, Flatpak los reinstala automáticamente.
+# Quita runtimes que ninguna app instalada usa. Igual que en el paso 4,
+# Flatpak muestra la lista y pide confirmación, salvo en modo -y.
+echo
 if command -v flatpak >/dev/null; then
 	info "🧹 7/7 - Eliminando runtimes sin uso (Flatpak)..."
-	run "flatpak remove --unused" flatpak remove --unused -y
+	run_flatpak "flatpak remove --unused" "limpieza de Flatpak" remove --unused
 else
 	info "⏭️  7/7 - Flatpak no está instalado. Omitiendo limpieza..."
 fi
@@ -545,7 +648,8 @@ if [[ -f /run/reboot-required ]] || ((FW_UPDATED)); then
 		sort -u /run/reboot-required.pkgs | sed 's/^/   • /'
 	fi
 	if ((FW_UPDATED)); then
-		warn "   Se actualizó firmware: algunos dispositivos lo aplican durante el reinicio."
+		warn "   Se actualizó firmware: algunos dispositivos lo aplican al reiniciar, y otros"
+		warn "   (como algunos SSD) recién al apagar y volver a prender."
 	fi
 fi
 

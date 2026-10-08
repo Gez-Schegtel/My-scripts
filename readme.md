@@ -114,9 +114,9 @@ Si un script existe en `common/` y en la carpeta de una distribución con el mis
 
 Las dependencias de cada script están detalladas en su encabezado.
 
-### 📄 Dependencia de `md2pdf`: el repositorio Pandoc config
+### 📄 Dependencia de `md2pdf`: el repositorio [Pandoc config](https://github.com/Gez-Schegtel/My-Pandoc-Config)
 
-El estilo de los PDF (fuentes, emojis a color, cuadros, tablas, márgenes) no vive en este repositorio, sino en otro aparte: **Pandoc config**. `md2pdf` se limita a llamar a `pandoc -d estilo`, y pandoc busca esa configuración en su carpeta de datos, así que hay que instalarla ahí una sola vez:
+El estilo de los PDF (fuentes, emojis a color, cuadros, tablas, márgenes) no vive en este repositorio, sino en otro aparte: **[Pandoc config](https://github.com/Gez-Schegtel/My-Pandoc-Config)**. `md2pdf` se limita a llamar a `pandoc -d estilo`, y pandoc busca esa configuración en su carpeta de datos, así que hay que instalarla ahí una sola vez:
 
 ```bash
 git clone https://github.com/Gez-Schegtel/My-scripts.git ~/.local/share/pandoc

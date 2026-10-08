@@ -100,7 +100,7 @@ Si un script existe en `common/` y en la carpeta de una distribución con el mis
 ### Comunes (`common/`)
 
 *   **`auto-ocr`**: Recibe uno o varios archivos PDF por parámetro, los limpia, endereza las páginas escaneadas y les aplica Reconocimiento Óptico de Caracteres en español sin tocar el archivo original (guarda el resultado como `archivo_ocr.pdf`). Saltea los que ya procesó, así que puedes volver a ejecutarlo sobre la misma carpeta sin repetir trabajo.
-*   **`md2pdf`**: Convierte apuntes de Markdown (`.md`) a PDF utilizando `pandoc` y LaTeX. Puede convertir un archivo específico o todos los de una carpeta a la vez de forma interactiva. Si un archivo falla, sigue con los demás y al final te dice cuáles no pudo convertir.
+*   **`md2pdf`**: Convierte apuntes de Markdown (`.md`) a PDF con `pandoc`, aplicando mi estilo (`pandoc -d estilo`). Convierte los archivos que le indiques (`md2pdf a.md b.md`) o, si no le pasas ninguno, todos los `.md` de la carpeta actual. Muestra la lista y pide confirmación antes de empezar, y guarda cada PDF al lado de su `.md`. Si un archivo falla, sigue con los demás y al final te dice cuáles no pudo convertir. **El script no define cómo se ve el PDF**: lo toma del repositorio *Pandoc config* (ver la sección siguiente).
 *   **`discord-updater`**: Descarga e instala inteligentemente la última versión estable de Discord (`.deb`). Inspecciona los servidores primero para no descargar la actualización si ya tienes la última versión.
 *   **`discord-canary-updater`**: Igual que el anterior, pero para la versión Canary (Alpha) de Discord.
 
@@ -113,6 +113,23 @@ Si un script existe en `common/` y en la carpeta de una distribución con el mis
 *   **`debian-updater`**: Actualización completa de Debian: APT (incluido el kernel), Snap, Flatpak y firmware (fwupd), con limpieza de paquetes huérfanos. Nunca cambia de versión de Debian, pero avisa si hay una nueva y te explica cómo seguir si tus fuentes de APT usan el alias `stable`. Por defecto muestra qué va a instalar y pide confirmación; con `-y` instala todo sin preguntar. Protege las fases críticas de interrupciones, repara automáticamente ejecuciones anteriores interrumpidas y avisa si hace falta reiniciar (también cuando se actualizó el kernel). Ver `debian-updater --help`.
 
 Las dependencias de cada script están detalladas en su encabezado.
+
+### 📄 Dependencia de `md2pdf`: el repositorio Pandoc config
+
+El estilo de los PDF (fuentes, emojis a color, cuadros, tablas, márgenes) no vive en este repositorio, sino en otro aparte: **Pandoc config**. `md2pdf` se limita a llamar a `pandoc -d estilo`, y pandoc busca esa configuración en su carpeta de datos, así que hay que instalarla ahí una sola vez:
+
+```bash
+git clone https://github.com/Gez-Schegtel/My-scripts.git ~/.local/share/pandoc
+```
+*(Reemplaza la URL por la de tu repositorio Pandoc config. Sus dependencias, los paquetes de LaTeX y las fuentes, están en el README de ese repositorio.)*
+
+Para comprobar que pandoc usa esa carpeta:
+```bash
+pandoc --version | grep -i "user data"
+```
+Tiene que mostrar `/home/tu_usuario/.local/share/pandoc`. Si existe una carpeta `~/.pandoc`, pandoc usa esa en su lugar.
+
+Antes de convertir nada, `md2pdf` comprueba que estén `pandoc` y `lualatex` y que `-d estilo` se pueda cargar. Si falta algo, te lo dice una sola vez con cómo arreglarlo. Para cambiar cómo se ven los PDF se edita el repositorio Pandoc config, no el script.
 
 ---
 

@@ -3,74 +3,84 @@
 # ==============================================================================
 # SCRIPT: md2pdf
 # DESCRIPCIÓN:
-#   Convierte archivos Markdown (.md) a formato PDF utilizando Pandoc.
-#   Es un script interactivo: si se le pasan archivos por argumento, convierte
-#   solo esos. Si se ejecuta sin argumentos, detecta y procesa todos los
-#   archivos .md del directorio actual. Siempre pide confirmación antes de
-#   iniciar la conversión.
+#   Convierte archivos Markdown (.md) a PDF con pandoc, usando mi configuración
+#   de estilo ("pandoc -d estilo"). Es lo mismo que escribir a mano
+#       pandoc -d estilo nota.md -o nota.pdf
+#   pero para varios archivos a la vez y con confirmación.
 #
-#   Motor PDF: usa lualatex si está instalado; si no, xelatex; y si no, el de
-#   Pandoc por defecto. El motor por defecto (pdflatex) no genera NADA si el
-#   documento tiene letras griegas (α), símbolos como ✓ o emojis. xelatex los
-#   acepta, pero no puede usar una fuente de respaldo para los emojis;
-#   lualatex sí, y los emojis salen a color. Con lualatex el script agrega solo
-#   la fuente de respaldo (Noto Color Emoji y DejaVu Sans) sobre Latin Modern
-#   Roman; la nota no necesita nada especial en su cabecera YAML.
+#   El script NO define ningún aspecto del PDF (motor, fuentes, emojis, cuadros,
+#   márgenes...). Todo eso vive en el repositorio "Pandoc config", que es la
+#   carpeta de datos de pandoc (~/.local/share/pandoc):
+#       defaults/estilo.yaml     opciones de pandoc (el que se nombra con -d)
+#       defaults/metadatos.yaml  idioma, márgenes, tamaño de letra
+#       defaults/estilo.tex      aspecto en LaTeX
+#   Para cambiar cómo se ven los PDF se edita ese repositorio, no este script.
+#   Cada nota solo necesita su cabecera (title, author, date...) y puede
+#   cambiar un valor poniéndolo ahí (por ejemplo, geometry: margin=4cm).
 #
-#   Si un archivo falla, sigue con los demás y al final informa cuáles no se
-#   pudieron convertir.
+#   Cómo funciona:
+#     1. Arma la lista de archivos: los que se pasan como argumento o, si no se
+#        pasa ninguno, todos los .md de la carpeta actual.
+#     2. Los muestra y pide confirmación.
+#     3. Ejecuta pandoc una vez por archivo. El PDF se guarda al lado del .md
+#        con el mismo nombre (nota.md -> nota.pdf).
+#     4. Si un archivo falla, sigue con los demás y al final informa cuáles
+#        no se pudieron convertir.
 #
 # USO:
 #   md2pdf                    (Detecta y convierte todos los .md de la carpeta)
 #   md2pdf archivo.md         (Convierte solo un archivo específico)
 #   md2pdf apunte1.md apunte2.md
+#   md2pdf ~/notas/*.md       (Los archivos pueden estar en cualquier carpeta)
 #
 # CÓDIGO DE SALIDA:
-#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló.
+#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló o si
+#   falta alguna dependencia o la configuración de estilo.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - zsh (El script está escrito específicamente para Z shell)
-#   - pandoc (El conversor universal de documentos)
-#   - LaTeX para exportar a PDF. Con solo texlive-latex-base fallan los
-#     documentos con tablas o bloques de código: hace falta
-#     texlive-latex-recommended. texlive-luatex agrega el motor lualatex
-#     (texlive-xetex agrega xelatex, que se usa si falta lualatex), y
-#     lmodern es la fuente que Pandoc usa por defecto (sin ella, no genera
-#     ningún PDF).
-#   - fonts-noto-color-emoji (emojis a color en el PDF)
+#   - pandoc y lualatex, con los paquetes de LaTeX y las fuentes que usa el
+#     estilo (la lista completa está en el README del repositorio Pandoc config)
+#   - El repositorio Pandoc config instalado en la carpeta de datos de pandoc
+#     (para comprobarlo: pandoc --version | grep -i "user data")
 #
 # Instalación de dependencias en Debian/Ubuntu:
-#   sudo apt install zsh pandoc texlive-latex-recommended texlive-fonts-recommended texlive-luatex texlive-xetex lmodern fonts-noto-color-emoji
+#   sudo apt install zsh pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji
 # ==============================================================================
 
+# extended_glob: permite el patrón *.(#i)(md|markdown)(N.) de más abajo.
 setopt extended_glob
+
+# --- Comprobaciones previas ---------------------------------------------------
+# Se hacen antes de pedir nada, para fallar una sola vez y con un mensaje claro
+# (si no, cada archivo fallaría por separado con el mismo error).
 
 if (( ! $+commands[pandoc] )); then
   echo "❌ Error: pandoc no está instalado. Instalalo con:"
-  echo "   sudo apt install pandoc texlive-latex-recommended texlive-fonts-recommended texlive-luatex texlive-xetex lmodern fonts-noto-color-emoji"
+  echo "   sudo apt install pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji"
   exit 1
 fi
 
-# Motor PDF: lualatex si está disponible; si no, xelatex; si no, el de Pandoc
-motor=()
-if (( $+commands[lualatex] )); then
-  # Con lualatex se agrega solo la fuente de respaldo para emojis y símbolos,
-  # así las notas no necesitan copiar nada en su cabecera YAML. Usa Latin
-  # Modern Roman como fuente principal (pisa el "mainfont" de la nota).
-  cabecera=$(mktemp) || exit 1
-  trap 'rm -f "$cabecera"' EXIT
-  cat > "$cabecera" <<'FUENTES'
-\directlua{
-  luaotfload.add_fallback("emojis", {"Noto Color Emoji:mode=harf;", "DejaVu Sans:"})
-}
-\setmainfont{Latin Modern Roman}[RawFeature={fallback=emojis}]
-FUENTES
-  motor=(--pdf-engine=lualatex --include-in-header="$cabecera")
-elif (( $+commands[xelatex] )); then
-  motor=(--pdf-engine=xelatex)
+if (( ! $+commands[lualatex] )); then
+  echo "❌ Error: lualatex no está instalado (lo usa el estilo de los PDF). Instalalo con:"
+  echo "   sudo apt install texlive-luatex"
+  exit 1
 fi
 
-# 1. Construimos la lista de archivos a convertir
+# Se comprueba que "-d estilo" se pueda cargar: convierte un texto vacío a texto
+# plano (no genera ningún PDF). Falla si pandoc no encuentra defaults/estilo.yaml
+# en su carpeta de datos o si ese archivo apunta a otro que no existe.
+if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
+  echo "❌ Error: pandoc no pudo cargar la configuración de estilo (-d estilo)."
+  echo "   Tiene que existir defaults/estilo.yaml dentro de la carpeta de datos de"
+  echo "   pandoc. Para ver cuál es esa carpeta:"
+  echo "     pandoc --version | grep -i \"user data\""
+  echo "   (Si existe una carpeta ~/.pandoc, pandoc usa esa en lugar de"
+  echo "   ~/.local/share/pandoc.)"
+  exit 1
+fi
+
+# --- 1. Construimos la lista de archivos a convertir --------------------------
 archivos=()
 
 if (( $# > 0 )); then
@@ -85,23 +95,24 @@ if (( $# > 0 )); then
     fi
   done
 else
-  # Si no pasaste nada: todos los .md del directorio (también .MD o .markdown)
+  # Si no pasaste nada: todos los .md del directorio (también .MD o .markdown).
+  # (#i) ignora mayúsculas, (N) no da error si no hay ninguno, (.) solo archivos.
   archivos=( *.(#i)(md|markdown)(N.) )
 fi
 
-# 2. Si no hay archivos, salimos
+# --- 2. Si no hay archivos, salimos -------------------------------------------
 if (( ${#archivos[@]} == 0 )); then
   echo "No se encontraron archivos Markdown para convertir."
   exit 0
 fi
 
-# 3. Mostrar qué se va a convertir (el PDF reemplaza la extensión .md)
+# --- 3. Mostrar qué se va a convertir (el PDF reemplaza la extensión .md) -----
 echo "Se van a convertir los siguientes archivos:"
 for archivo in "${archivos[@]}"; do
   echo "  - $archivo -> ${archivo:r}.pdf"
 done
 
-# 4. Pedir confirmación
+# --- 4. Pedir confirmación ----------------------------------------------------
 read "respuesta?¿Continuar? [s/N]: "
 case "$respuesta" in
   s|S|y|Y)
@@ -113,12 +124,13 @@ case "$respuesta" in
     ;;
 esac
 
-# 5. Ejecutar pandoc y mostrar mensajes por archivo. Si uno falla, se sigue
-#    con los demás ("--" por si algún nombre empieza con "-").
+# --- 5. Ejecutar pandoc y mostrar mensajes por archivo ------------------------
+# Si uno falla, se sigue con los demás. "--" va antes del archivo por si algún
+# nombre empieza con "-" (si no, pandoc lo tomaría por una opción).
 fallidos=()
 for archivo in "${archivos[@]}"; do
   salida="${archivo:r}.pdf"
-  if pandoc "${motor[@]}" --output="$salida" -- "$archivo"; then
+  if pandoc -d estilo --output="$salida" -- "$archivo"; then
     echo "✔ Generado: $salida"
   else
     echo "❌ Error al convertir: $archivo"

@@ -9,10 +9,13 @@
 #   archivos .md del directorio actual. Siempre pide confirmación antes de
 #   iniciar la conversión.
 #
-#   Si xelatex está instalado, lo usa para generar el PDF. El motor por
-#   defecto de Pandoc (pdflatex) no genera NADA si el documento tiene letras
-#   griegas (α), símbolos como ✓ o emojis; xelatex los acepta. Los emojis
-#   igual no se ven (la fuente no los tiene), pero no impiden generar el PDF.
+#   Motor PDF: usa lualatex si está instalado; si no, xelatex; y si no, el de
+#   Pandoc por defecto. El motor por defecto (pdflatex) no genera NADA si el
+#   documento tiene letras griegas (α), símbolos como ✓ o emojis. xelatex los
+#   acepta, pero no puede usar una fuente de respaldo para los emojis;
+#   lualatex sí, y los emojis salen a color. Con lualatex el script agrega solo
+#   la fuente de respaldo (Noto Color Emoji y DejaVu Sans) sobre Latin Modern
+#   Roman; la nota no necesita nada especial en su cabecera YAML.
 #
 #   Si un archivo falla, sigue con los demás y al final informa cuáles no se
 #   pudieron convertir.
@@ -30,25 +33,40 @@
 #   - pandoc (El conversor universal de documentos)
 #   - LaTeX para exportar a PDF. Con solo texlive-latex-base fallan los
 #     documentos con tablas o bloques de código: hace falta
-#     texlive-latex-recommended. texlive-xetex agrega el motor xelatex, y
+#     texlive-latex-recommended. texlive-luatex agrega el motor lualatex
+#     (texlive-xetex agrega xelatex, que se usa si falta lualatex), y
 #     lmodern es la fuente que Pandoc usa por defecto (sin ella, no genera
 #     ningún PDF).
+#   - fonts-noto-color-emoji (emojis a color en el PDF)
 #
 # Instalación de dependencias en Debian/Ubuntu:
-#   sudo apt install zsh pandoc texlive-latex-recommended texlive-fonts-recommended texlive-xetex lmodern
+#   sudo apt install zsh pandoc texlive-latex-recommended texlive-fonts-recommended texlive-luatex texlive-xetex lmodern fonts-noto-color-emoji
 # ==============================================================================
 
 setopt extended_glob
 
 if (( ! $+commands[pandoc] )); then
   echo "❌ Error: pandoc no está instalado. Instalalo con:"
-  echo "   sudo apt install pandoc texlive-latex-recommended texlive-fonts-recommended texlive-xetex lmodern"
+  echo "   sudo apt install pandoc texlive-latex-recommended texlive-fonts-recommended texlive-luatex texlive-xetex lmodern fonts-noto-color-emoji"
   exit 1
 fi
 
-# Motor PDF: xelatex si está disponible; si no, el de Pandoc por defecto
+# Motor PDF: lualatex si está disponible; si no, xelatex; si no, el de Pandoc
 motor=()
-if (( $+commands[xelatex] )); then
+if (( $+commands[lualatex] )); then
+  # Con lualatex se agrega solo la fuente de respaldo para emojis y símbolos,
+  # así las notas no necesitan copiar nada en su cabecera YAML. Usa Latin
+  # Modern Roman como fuente principal (pisa el "mainfont" de la nota).
+  cabecera=$(mktemp) || exit 1
+  trap 'rm -f "$cabecera"' EXIT
+  cat > "$cabecera" <<'FUENTES'
+\directlua{
+  luaotfload.add_fallback("emojis", {"Noto Color Emoji:mode=harf;", "DejaVu Sans:"})
+}
+\setmainfont{Latin Modern Roman}[RawFeature={fallback=emojis}]
+FUENTES
+  motor=(--pdf-engine=lualatex --include-in-header="$cabecera")
+elif (( $+commands[xelatex] )); then
   motor=(--pdf-engine=xelatex)
 fi
 

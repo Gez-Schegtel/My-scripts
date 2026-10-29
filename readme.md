@@ -100,7 +100,7 @@ Si un script existe en `common/` y en la carpeta de una distribución con el mis
 ### Comunes (`common/`)
 
 *   **`auto-ocr`**: Recibe uno o varios archivos PDF por parámetro, los limpia, endereza las páginas escaneadas y les aplica Reconocimiento Óptico de Caracteres en español sin tocar el archivo original (guarda el resultado como `archivo_ocr.pdf`). Saltea los que ya procesó, así que puedes volver a ejecutarlo sobre la misma carpeta sin repetir trabajo.
-*   **`md2pdf`**: Convierte apuntes de Markdown (`.md`) a PDF con `pandoc`, aplicando mi estilo (`pandoc -d estilo`). Convierte los archivos que le indiques (`md2pdf a.md b.md`) o, si no le pasas ninguno, todos los `.md` de la carpeta actual. Muestra la lista y pide confirmación antes de empezar, y guarda cada PDF al lado de su `.md`. Si un archivo falla, sigue con los demás y al final te dice cuáles no pudo convertir. **El script no define cómo se ve el PDF**: lo toma del repositorio *Pandoc config* (ver la sección siguiente).
+*   **`md2pdf`**: Convierte apuntes de Markdown (`.md`) a PDF con `pandoc`, aplicando mi estilo (`pandoc -d estilo`). Convierte los archivos que le indiques (`md2pdf a.md b.md`) o, si no le pasas ninguno, todos los `.md` de la carpeta actual. Muestra la lista y pide confirmación antes de empezar, y guarda cada PDF al lado de su `.md`. Si un archivo falla, sigue con los demás y al final te dice cuáles no pudo convertir. Las imágenes se buscan en la carpeta del `.md`, así que funciona aunque lo ejecutes desde otra carpeta (`md2pdf ~/notas/*.md`). También entiende las notas de **Obsidian**: traduce `![[imagen.png]]` (y `![[imagen.png|400]]`, con ancho) y los enlaces `[[Nota]]` a Markdown estándar en una copia temporal, sin tocar tu `.md`, y busca cada imagen por nombre en todo el vault (o, si no hay vault, en el repositorio git de la nota). Los `.md` sin `[[ ]]` pasan directo a pandoc, sin traducción. **El script no define cómo se ve el PDF**: lo toma del repositorio *Pandoc config* (ver la sección siguiente).
 *   **`discord-updater`**: Descarga e instala inteligentemente la última versión estable de Discord (`.deb`). Inspecciona los servidores primero para no descargar la actualización si ya tienes la última versión.
 *   **`discord-canary-updater`**: Igual que el anterior, pero para la versión Canary (Alpha) de Discord.
 
@@ -119,9 +119,9 @@ Las dependencias de cada script están detalladas en su encabezado.
 El estilo de los PDF (fuentes, emojis a color, cuadros, tablas, márgenes) no vive en este repositorio, sino en otro aparte: **[Pandoc config](https://github.com/Gez-Schegtel/My-Pandoc-Config)**. `md2pdf` se limita a llamar a `pandoc -d estilo`, y pandoc busca esa configuración en su carpeta de datos, así que hay que instalarla ahí una sola vez:
 
 ```bash
-git clone https://github.com/Gez-Schegtel/My-scripts.git ~/.local/share/pandoc
+git clone https://github.com/Gez-Schegtel/My-Pandoc-Config.git ~/.local/share/pandoc
 ```
-*(Reemplaza la URL por la de tu repositorio Pandoc config. Sus dependencias, los paquetes de LaTeX y las fuentes, están en el README de ese repositorio.)*
+*(Sus dependencias, los paquetes de LaTeX y las fuentes, están en el README de ese repositorio.)*
 
 Para comprobar que pandoc usa esa carpeta:
 ```bash

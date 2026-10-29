@@ -106,7 +106,7 @@ Si un script existe en `common/` y en la carpeta de una distribución con el mis
 
 ### Ubuntu (`ubuntu/`)
 
-*   **`ubuntu-updater`**: Actualización completa de Ubuntu: APT (incluido el kernel), Snap, Flatpak y firmware (fwupd), con limpieza de paquetes huérfanos. Nunca cambia de versión de Ubuntu, pero avisa si hay una nueva. Por defecto muestra qué va a instalar y pide confirmación; con `-y` instala todo sin preguntar. Protege las fases críticas de interrupciones y repara automáticamente ejecuciones anteriores interrumpidas. Ver `ubuntu-updater --help`.
+*   **`ubuntu-updater`**: Actualización completa de Ubuntu: APT (incluido el kernel), Snap, Flatpak y firmware (fwupd), con limpieza de paquetes huérfanos. Nunca cambia de versión de Ubuntu, pero avisa si hay una nueva y si hace falta reiniciar. Por defecto muestra qué va a instalar y pide confirmación; con `-y` instala todo sin preguntar. Protege las fases críticas de interrupciones y repara automáticamente ejecuciones anteriores interrumpidas. Ver `ubuntu-updater --help`.
 
 ### Debian (`debian/`)
 

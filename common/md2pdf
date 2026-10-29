@@ -60,6 +60,8 @@
 #     estilo (la lista completa está en el README del repositorio Pandoc config)
 #   - El repositorio Pandoc config instalado en la carpeta de datos de pandoc
 #     (para comprobarlo: pandoc --version | grep -i "user data")
+#   - perl, solo para las notas de Obsidian (viene instalado en Debian/Ubuntu).
+#     git es opcional: si está, se usa para encontrar la raíz del repositorio.
 #
 # Instalación de dependencias en Debian/Ubuntu:
 #   sudo apt install zsh pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji

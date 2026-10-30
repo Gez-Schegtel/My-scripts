@@ -41,6 +41,10 @@
 #   se traduce a Markdown estándar en una copia temporal (el .md no se toca):
 #       ![[foto.png]]         ->  la imagen
 #       ![[foto.png|400]]     ->  la imagen con 400 px de ancho
+#       ![[foto.png|derecha]] ->  la imagen pegada a la derecha ("izquierda"
+#                                 también vale; se puede combinar: |derecha|300)
+#   Sin alineación, las imágenes salen centradas en el PDF. En Obsidian las
+#   palabras "izquierda" y "derecha" son solo texto alternativo: no se ven.
 #       [[Nota]]              ->  Nota          (texto, sin enlace)
 #       [[Nota|otro texto]]   ->  otro texto
 #   La imagen se busca, en este orden: en la carpeta del .md (o la ruta escrita,
@@ -209,8 +213,19 @@ sub traducir {
       warn "⚠️  No encontré la imagen: $sin_seccion\n";
       return "[imagen no encontrada: $sin_seccion]";
     }
-    my $ancho = (defined $extra && $extra =~ /^\s*(\d+)/) ? "{width=$1px}" : "";
-    return "![](<$ruta>)$ancho";
+    # Después del primer | puede haber un ancho (400), una alineación
+    # (izquierda / derecha) o ambos, en cualquier orden: |derecha|300
+    my @attr;
+    if (defined $extra) {
+      for my $t (split /\|/, $extra) {
+        $t =~ s/\\$//; $t =~ s/^\s+|\s+$//g;
+        if    ($t =~ /^(\d+)/)               { push @attr, "width=$1px" unless grep { /^width=/ } @attr; }
+        elsif (lc $t eq 'izquierda')          { push @attr, ".izquierda" unless grep { /^\.(izquierda|derecha)$/ } @attr; }
+        elsif (lc $t eq 'derecha')            { push @attr, ".derecha"   unless grep { /^\.(izquierda|derecha)$/ } @attr; }
+      }
+    }
+    my $atributos = @attr ? "{" . join(" ", @attr) . "}" : "";
+    return "![](<$ruta>)$atributos";
   }
   # Enlace a otra nota (o nota embebida): queda el texto
   return (defined $extra && $extra ne "") ? $extra : $destino;

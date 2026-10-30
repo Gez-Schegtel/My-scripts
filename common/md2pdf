@@ -94,8 +94,9 @@ if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
   echo "   Tiene que existir defaults/estilo.yaml dentro de la carpeta de datos de"
   echo "   pandoc. Para ver cuál es esa carpeta:"
   echo "     pandoc --version | grep -i \"user data\""
-  echo "   (Si existe una carpeta ~/.pandoc, pandoc usa esa en lugar de"
-  echo "   ~/.local/share/pandoc.)"
+  echo "   Tiene que ser ~/.local/share/pandoc. Si muestra ~/.pandoc, es porque"
+  echo "   ~/.local/share/pandoc no existe (pandoc usa la carpeta vieja solo en"
+  echo "   ese caso)."
   exit 1
 fi
 

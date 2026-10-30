@@ -127,7 +127,7 @@ Para comprobar que pandoc usa esa carpeta:
 ```bash
 pandoc --version | grep -i "user data"
 ```
-Tiene que mostrar `/home/tu_usuario/.local/share/pandoc`. Si existe una carpeta `~/.pandoc`, pandoc usa esa en su lugar.
+Tiene que mostrar `/home/tu_usuario/.local/share/pandoc`. Si muestra `~/.pandoc`, es porque `~/.local/share/pandoc` no existe: pandoc usa esa carpeta vieja solo en ese caso.
 
 Antes de convertir nada, `md2pdf` comprueba que estén `pandoc` y `lualatex` y que `-d estilo` se pueda cargar. Si falta algo, te lo dice una sola vez con cómo arreglarlo. Para cambiar cómo se ven los PDF se edita el repositorio Pandoc config, no el script.
 

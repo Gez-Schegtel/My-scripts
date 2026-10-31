@@ -22,7 +22,8 @@
 #   Cómo funciona:
 #     1. Arma la lista de archivos: los que se pasan como argumento o, si no se
 #        pasa ninguno, todos los .md de la carpeta actual.
-#     2. Los muestra y pide confirmación.
+#     2. Los muestra y pide confirmación (y o ENTER aceptan; cualquier otra
+#        respuesta cancela). Con -y no pregunta.
 #     3. Ejecuta pandoc una vez por archivo. El PDF se guarda al lado del .md
 #        con el mismo nombre (nota.md -> nota.pdf). Las imágenes se buscan
 #        primero en la carpeta del .md, así funciona aunque lo ejecutes desde
@@ -35,6 +36,8 @@
 #   md2pdf archivo.md         (Convierte solo un archivo específico)
 #   md2pdf apunte1.md apunte2.md
 #   md2pdf ~/notas/*.md       (Los archivos pueden estar en cualquier carpeta)
+#   md2pdf -y archivo.md      (-y o --yes: convierte sin pedir confirmación;
+#                              va con cualquiera de las formas de arriba)
 #
 # NOTAS DE OBSIDIAN:
 #   Si un .md tiene sintaxis de Obsidian ([[...]]) o imágenes, antes de pasarlo a pandoc
@@ -108,6 +111,16 @@ if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
   exit 1
 fi
 
+# --- Opciones -----------------------------------------------------------------
+# -y / --yes: no pregunta, convierte directo. zparseopts saca las opciones de
+# los argumentos (-E: en cualquier posición); -F falla con una opción que no
+# existe. Un "--" suelto se descarta (se acepta por costumbre de otros comandos).
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y 2>/dev/null || {
+  echo "❌ Opción no válida. Uso: md2pdf [-y] [archivo.md ...]"
+  exit 1
+}
+[[ $1 == -- ]] && shift
+
 # --- 1. Construimos la lista de archivos a convertir --------------------------
 archivos=()
 
@@ -141,16 +154,23 @@ for archivo in "${archivos[@]}"; do
 done
 
 # --- 4. Pedir confirmación ----------------------------------------------------
-read "respuesta?¿Continuar? [s/N]: "
-case "$respuesta" in
-  s|S|y|Y)
-    echo "Iniciando conversión..."
-    ;;
-  *)
-    echo "Operación cancelada."
-    exit 0
-    ;;
-esac
+# [Y/n]: ENTER solo también acepta. Si no hay dónde leer la respuesta (Ctrl+D,
+# o el script corre sin terminal), se cancela en vez de aceptar sin preguntar.
+# Con -y se salta la pregunta.
+if (( $#opcion_y )); then
+  echo "Iniciando conversión..."
+else
+  read "respuesta?¿Continuar? [Y/n]: " || respuesta=n
+  case "$respuesta" in
+    y|Y|"")
+      echo "Iniciando conversión..."
+      ;;
+    *)
+      echo "Operación cancelada."
+      exit 0
+      ;;
+  esac
+fi
 
 # --- Traducción de la sintaxis de Obsidian -----------------------------------
 # Solo se usa con los .md que tienen [[ ]] (ver "NOTAS DE OBSIDIAN" arriba).

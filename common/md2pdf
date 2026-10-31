@@ -37,7 +37,7 @@
 #   md2pdf ~/notas/*.md       (Los archivos pueden estar en cualquier carpeta)
 #
 # NOTAS DE OBSIDIAN:
-#   Si un .md tiene sintaxis de Obsidian ([[...]]), antes de pasarlo a pandoc
+#   Si un .md tiene sintaxis de Obsidian ([[...]]) o imágenes, antes de pasarlo a pandoc
 #   se traduce a Markdown estándar en una copia temporal (el .md no se toca):
 #       ![[foto.png]]         ->  la imagen
 #       ![[foto.png|400]]     ->  la imagen con 400 px de ancho
@@ -51,8 +51,12 @@
 #   si tiene carpeta), y después por nombre en todo el vault (la carpeta que
 #   tiene .obsidian/). Si no hay vault, en todo el repositorio git del .md; y
 #   si tampoco hay, en la carpeta del .md y sus subcarpetas.
+#   Lo mismo vale para las imágenes de Markdown estándar, ![texto](foto.png),
+#   que es lo que Obsidian escribe si desactivás los wikilinks (con %20 en vez
+#   de espacios): si el archivo no está donde dice la ruta, se busca por nombre
+#   en el vault. Si la ruta existe tal cual, no se toca nada.
 #   Dentro de bloques de código y de `código en línea` no se cambia nada.
-#   Los .md sin [[ ]] pasan directo a pandoc, sin ninguna traducción.
+#   Los .md sin [[ ]] ni imágenes pasan directo a pandoc, sin traducción.
 #
 # CÓDIGO DE SALIDA:
 #   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló o si
@@ -231,13 +235,34 @@ sub traducir {
   return (defined $extra && $extra ne "") ? $extra : $destino;
 }
 
+# Imagen de Markdown estándar: ![texto](ruta). Si la ruta existe tal cual (ya
+# sea relativa a la carpeta del .md o absoluta), no se toca nada. Si no existe,
+# se prueba con los %20 y similares decodificados y se busca el archivo por
+# nombre, igual que con ![[...]]. Si se encuentra, se reescribe con la ruta
+# completa; si no, queda como estaba (pandoc avisa que no la encontró).
+sub imagen_estandar {
+  my ($original, $alt, $dest, $titulo) = @_;
+  my $d = $dest;
+  $d =~ s/^<(.*)>$/$1/;
+  return $original if $d =~ m{^(?:[a-zA-Z][a-zA-Z0-9+.\-]*:|/|\#)};   # URL, ruta absoluta
+  my $dec = $d;
+  $dec =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
+  $dec = txt($dec);                                   # bytes UTF-8 -> texto
+  return $original if -f fs("$carpeta/$d") || -f fs("$carpeta/$dec");
+  my $ruta = buscar($dec);
+  return $original unless defined $ruta;
+  return "![$alt](<$ruta>" . (defined $titulo ? $titulo : "") . ")";
+}
+
 my $en_codigo = 0;
 while (my $linea = <STDIN>) {
   if ($linea =~ /^\s*(```|~~~)/) { $en_codigo = !$en_codigo; print $linea; next; }
   if ($en_codigo) { print $linea; next; }
   # `código` se deja igual; ![[...]] y [[...]] se traducen
-  $linea =~ s{(`+)(.*?)\1|(!?)\[\[([^\[\]\n]+?)\]\]}{
-    defined $1 ? "$1$2$1" : traducir($3 eq "!", $4)
+  $linea =~ s{(`+)(.*?)\1|(!?)\[\[([^\[\]\n]+?)\]\]|!\[([^\[\]\n]*)\]\((<[^>\n]+>|[^)\s]+)(\s+"[^"\n]*")?\)}{
+    defined $1 ? "$1$2$1"
+    : defined $4 ? traducir($3 eq "!", $4)
+    : imagen_estandar($&, $5, $6, $7)
   }ge;
   print $linea;
 }
@@ -260,7 +285,7 @@ for archivo in "${archivos[@]}"; do
   salida="${archivo:r}.pdf"
   entrada="$archivo"
   temporal=""
-  if grep -q '\[\[' -- "$archivo"; then
+  if grep -q -e '\[\[' -e '!\[' -- "$archivo"; then
     temporal="$(mktemp --suffix=.md)"
     if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
          perl -CSD -e "$TRADUCIR_OBSIDIAN" < "$archivo" > "$temporal"; then

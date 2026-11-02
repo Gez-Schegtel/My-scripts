@@ -1,4 +1,5 @@
 #!/usr/bin/env zsh
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 # ==============================================================================
 # SCRIPT: mdnorm

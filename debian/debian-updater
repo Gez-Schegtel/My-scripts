@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # ==============================================================================
 # SCRIPT:  debian-updater
 # VERSIÓN: 1.2 (basado en ubuntu-updater 2.1)

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # ==============================================================================
 # SCRIPT:  ubuntu-updater
 # VERSIÓN: 2.2

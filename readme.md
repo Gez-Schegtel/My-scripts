@@ -21,6 +21,7 @@ La arquitectura de este proyecto utiliza **lo mejor de los dos mundos**: los arc
 ├── ubuntu/                      # Solo para Ubuntu
 │   └── ubuntu-updater
 ├── install.sh                   # Instalador
+├── LICENSE                      # Licencia (GPL-3.0)
 └── readme.md
 ```
 
@@ -41,10 +42,9 @@ Vamos a descargar este repositorio directamente en una carpeta oculta llamada `.
 
 Abre tu terminal y ejecuta:
 ```bash
-git clone https://github.com/TU-USUARIO/TU-REPO.git ~/.mis-scripts
+git clone https://github.com/Gez-Schegtel/My-scripts.git ~/.mis-scripts
 cd ~/.mis-scripts
 ```
-*(Nota: Reemplaza `TU-USUARIO/TU-REPO` con la URL real de tu repositorio).*
 
 ### Paso 2: Ejecutar el instalador
 ```bash
@@ -151,3 +151,15 @@ Como los archivos reales viven en tu carpeta `~/.mis-scripts`, **NO necesitas us
    git commit -m "Mejora en el actualizador"
    git push origin main
    ```
+
+---
+
+## 📄 Licencia
+
+Este proyecto es **software libre**: se distribuye bajo la [Licencia Pública General de GNU, versión 3 o posterior](LICENSE) (GPL-3.0-or-later).
+
+En pocas palabras: puedes usar, estudiar, modificar y compartir estos scripts como quieras. Si distribuyes una versión modificada, tiene que seguir bajo la misma licencia y con su código fuente disponible. Se ofrecen sin ninguna garantía.
+
+Cada script lo indica en su segunda línea con `# SPDX-License-Identifier: GPL-3.0-or-later`, una etiqueta estándar que identifica la licencia aunque el archivo se copie suelto.
+
+Copyright © 2026 Gez-Schegtel.

@@ -27,7 +27,7 @@
 #     3. Ejecuta pandoc una vez por archivo. El PDF se guarda al lado del .md
 #        con el mismo nombre (nota.md -> nota.pdf). Las imágenes se buscan
 #        primero en la carpeta del .md, así funciona aunque lo ejecutes desde
-#        otra carpeta.
+#        otra carpeta, y después en las carpetas que pases con -i.
 #     4. Si un archivo falla, sigue con los demás y al final informa cuáles
 #        no se pudieron convertir.
 #
@@ -38,6 +38,12 @@
 #   md2pdf ~/notas/*.md       (Los archivos pueden estar en cualquier carpeta)
 #   md2pdf -y archivo.md      (-y o --yes: convierte sin pedir confirmación;
 #                              va con cualquiera de las formas de arriba)
+#   md2pdf -i ~/imagenes archivo.md
+#                             (-i o --imagenes: otra carpeta donde buscar las
+#                              imágenes, también en sus subcarpetas. Se puede
+#                              repetir: -i una -i otra. Sirve cuando las
+#                              imágenes no están al lado del .md ni dentro del
+#                              vault o repositorio de la nota)
 #
 # NOTAS DE OBSIDIAN:
 #   Si un .md tiene sintaxis de Obsidian ([[...]]) o imágenes, antes de pasarlo a pandoc
@@ -51,9 +57,10 @@
 #       [[Nota]]              ->  Nota          (texto, sin enlace)
 #       [[Nota|otro texto]]   ->  otro texto
 #   La imagen se busca, en este orden: en la carpeta del .md (o la ruta escrita,
-#   si tiene carpeta), y después por nombre en todo el vault (la carpeta que
-#   tiene .obsidian/). Si no hay vault, en todo el repositorio git del .md; y
-#   si tampoco hay, en la carpeta del .md y sus subcarpetas.
+#   si tiene carpeta); en las carpetas de -i, si pasaste alguna (también por
+#   nombre en sus subcarpetas); y después por nombre en todo el vault (la
+#   carpeta que tiene .obsidian/). Si no hay vault, en todo el repositorio git
+#   del .md; y si tampoco hay, en la carpeta del .md y sus subcarpetas.
 #   Lo mismo vale para las imágenes de Markdown estándar, ![texto](foto.png),
 #   que es lo que Obsidian escribe si desactivás los wikilinks (con %20 en vez
 #   de espacios): si el archivo no está donde dice la ruta, se busca por nombre
@@ -112,14 +119,31 @@ if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
 fi
 
 # --- Opciones -----------------------------------------------------------------
-# -y / --yes: no pregunta, convierte directo. zparseopts saca las opciones de
-# los argumentos (-E: en cualquier posición); -F falla con una opción que no
-# existe. Un "--" suelto se descarta (se acepta por costumbre de otros comandos).
-zparseopts -D -E -F -- y=opcion_y -yes=opcion_y 2>/dev/null || {
-  echo "❌ Opción no válida. Uso: md2pdf [-y] [archivo.md ...]"
+# -y / --yes: no pregunta, convierte directo.
+# -i carpeta / --imagenes carpeta: otra carpeta donde buscar las imágenes. Se
+#   puede repetir (-i una -i otra).
+# zparseopts saca las opciones de los argumentos (-E: en cualquier posición);
+# -F falla con una opción que no existe. Un "--" suelto se descarta (se acepta
+# por costumbre de otros comandos).
+uso="Uso: md2pdf [-y] [-i carpeta_de_imágenes] [archivo.md ...]"
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y \
+    i+:=opcion_i -imagenes+:=opcion_i 2>/dev/null || {
+  echo "❌ Opción no válida o incompleta. $uso"
   exit 1
 }
 [[ $1 == -- ]] && shift
+
+# opcion_i queda como pares (-i carpeta -i carpeta ...): se toman las carpetas,
+# se comprueba que existan y se pasan a ruta absoluta.
+carpetas_imagenes=()
+for (( k = 2; k <= $#opcion_i; k += 2 )); do
+  carpeta="${opcion_i[k]#=}"      # --imagenes=carpeta deja un "=" adelante
+  if [[ ! -d $carpeta ]]; then
+    echo "❌ La carpeta de imágenes '$carpeta' no existe. $uso"
+    exit 1
+  fi
+  carpetas_imagenes+=("${carpeta:A}")
+done
 
 # --- 1. Construimos la lista de archivos a convertir --------------------------
 archivos=()
@@ -202,27 +226,37 @@ sub fs  { encode("UTF-8", $_[0]) }
 sub txt { decode("UTF-8", $_[0]) }
 my $carpeta = txt($ENV{CARPETA_MD});
 my $base    = txt($ENV{BASE});
-my %indice;   # nombre de archivo -> rutas encontradas (se arma al necesitarlo)
-my $indexado = 0;
+# Carpetas pasadas con -i (una por línea; pueden no venir).
+my @extras  = grep { length } split /\n/, txt($ENV{IMAGENES} // "");
+my %indices;  # carpeta -> { nombre de archivo -> rutas } (se arma al necesitarlo)
 
+sub indice_de {
+  my ($dir) = @_;
+  return $indices{$dir} if $indices{$dir};
+  my %ind; my $raiz = fs($dir);
+  find({ no_chdir => 1, wanted => sub {
+    if (-d $_ && basename($_) =~ /^\./ && $_ ne $raiz) { $File::Find::prune = 1; return; }
+    if (-f $_) { my $r = txt($_); push @{ $ind{basename($r)} }, $r; }
+  } }, $raiz);
+  return $indices{$dir} = \%ind;
+}
+
+# Orden: la ruta tal cual desde la carpeta del .md, desde cada carpeta de -i y
+# desde el vault; después, por nombre dentro de las carpetas de -i (y sus
+# subcarpetas) y por último por nombre en todo el vault.
 sub buscar {
   my ($ruta) = @_;
-  return "$carpeta/$ruta" if -f fs("$carpeta/$ruta");
-  return "$base/$ruta"    if -f fs("$base/$ruta");
-  if (!$indexado) {
-    my $raiz = fs($base);
-    find({ no_chdir => 1, wanted => sub {
-      if (-d $_ && basename($_) =~ /^\./ && $_ ne $raiz) { $File::Find::prune = 1; return; }
-      if (-f $_) { my $r = txt($_); push @{ $indice{basename($r)} }, $r; }
-    } }, $raiz);
-    $indexado = 1;
+  for my $dir ($carpeta, @extras, $base) {
+    return "$dir/$ruta" if -f fs("$dir/$ruta");
   }
-  my @c = @{ $indice{basename($ruta)} || [] };
   my $fin = "/$ruta";                               # si se escribió carpeta/foto.png
-  my @exactos = grep { substr($_, -length($fin)) eq $fin } @c;
-  @c = @exactos if @exactos;
-  return undef unless @c;
-  return (sort { length($a) <=> length($b) || $a cmp $b } @c)[0];  # la más cercana
+  for my $dir (@extras, $base) {
+    my @c = @{ indice_de($dir)->{basename($ruta)} || [] };
+    my @exactos = grep { substr($_, -length($fin)) eq $fin } @c;
+    @c = @exactos if @exactos;
+    return (sort { length($a) <=> length($b) || $a cmp $b } @c)[0] if @c;  # la más cercana
+  }
+  return undef;
 }
 
 sub traducir {
@@ -295,7 +329,8 @@ PERL
 # --resource-path: carpetas donde pandoc busca las imágenes (separadas por ":").
 # Por defecto busca solo en la carpeta desde donde se ejecuta el comando, así
 # que "md2pdf ~/notas/apunte.md" desde otra carpeta perdía las imágenes de
-# ~/notas. ${archivo:h} es la carpeta del .md; después se prueba la actual.
+# ~/notas. ${archivo:h} es la carpeta del .md; después, las carpetas de -i, y
+# por último la actual.
 #
 # Si el .md tiene sintaxis de Obsidian, pandoc lee una copia traducida (en una
 # carpeta temporal); las imágenes normales se siguen buscando en la carpeta
@@ -308,13 +343,14 @@ for archivo in "${archivos[@]}"; do
   if grep -q -e '\[\[' -e '!\[' -- "$archivo"; then
     temporal="$(mktemp --suffix=.md)"
     if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
-         perl -CSD -e "$TRADUCIR_OBSIDIAN" < "$archivo" > "$temporal"; then
+         IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR_OBSIDIAN" < "$archivo" > "$temporal"; then
       echo "❌ Error al traducir la sintaxis de Obsidian: $archivo"
       fallidos+=("$archivo"); rm -f "$temporal"; continue
     fi
     entrada="$temporal"
   fi
-  if pandoc -d estilo --resource-path="${archivo:h}:." --output="$salida" -- "$entrada"; then
+  rutas=("${archivo:h}" "${carpetas_imagenes[@]}" ".")
+  if pandoc -d estilo --resource-path="${(j.:.)rutas}" --output="$salida" -- "$entrada"; then
     echo "✔ Generado: $salida"
   else
     echo "❌ Error al convertir: $archivo"

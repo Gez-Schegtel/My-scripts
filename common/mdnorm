@@ -21,7 +21,12 @@
 #      Entre los ítems de una lista que ya empezó no agrega nada (la lista no
 #      se parte).
 #
-#   2. Tablas. Pandoc borra SIN AVISAR las columnas de más: si una fila tiene
+#   2. Títulos. Pandoc tampoco reconoce un título (# Título) pegado al
+#      párrafo de arriba: sale como texto con el "#". Agrega la línea en
+#      blanco antes. Las etiquetas de Obsidian (#etiqueta, sin espacio) no son
+#      títulos y no se tocan.
+#
+#   3. Tablas. Pandoc borra SIN AVISAR las columnas de más: si una fila tiene
 #      más celdas que el encabezado, o si la línea separadora (|---|---|) tiene
 #      menos columnas que el encabezado. Y si una celda tiene <br>, lo borra y
 #      pega las palabras ("1<br>2" sale "12"). En esos casos:
@@ -32,7 +37,7 @@
 #      demás quedan exactamente como estaban (alineación, espacios y anchos
 #      del separador incluidos).
 #
-#   3. Imágenes de Obsidian a Markdown estándar:
+#   4. Imágenes de Obsidian a Markdown estándar:
 #        ![[foto.png]]             ->  ![](assets/foto.png)
 #        ![[foto.png|300]]         ->  ![](assets/foto.png){width=300px}
 #        ![[foto.png|derecha]]     ->  ![](assets/foto.png){.derecha}
@@ -47,9 +52,26 @@
 #      ejemplo un texto alternativo), la deja como está y avisa.
 #      Los enlaces a notas ([[Nota]]) no se tocan.
 #
-#   No toca: la cabecera YAML (entre ---), los bloques de código (``` o ~~~),
-#   el código en línea (`...`), las fórmulas $$...$$, los entornos de LaTeX
-#   (\begin...\end) ni los títulos (#).
+#   5. Cabecera YAML (entre --- al principio del archivo). Arregla los
+#      errores que hacen fallar a pandoc o que cambian el valor sin avisar,
+#      en las claves de primer nivel ("clave: valor"):
+#        title: Unidad III: Subsistema  ->  title: 'Unidad III: Subsistema'
+#      Pone el valor entre comillas simples cuando hace falta: si tiene ": "
+#      o termina en ":"; si tiene " #" (pandoc tomaría el resto como un
+#      comentario y lo borraría: "Unidad #3" quedaba "Unidad"); o si empieza
+#      con un carácter especial (@ ` [ { * & ! % ? , | > o "- "). No toca
+#      valores como true, 11pt o \today, ni las listas [a, b].
+#        title:Hola       ->  title: Hola       (faltaba el espacio)
+#        title: "Hola     ->  title: "Hola"     (faltaba cerrar la comilla)
+#      Si falta el --- de cierre, lo agrega en la primera línea en blanco
+#      (sin él, toda la cabecera salía como texto en el PDF). Si una clave
+#      está repetida, avisa (pandoc usa la última sin decir nada).
+#      Las listas y los valores anidados no se tocan. Al final, si pandoc
+#      está instalado, se comprueba que la cabecera se pueda leer y, si no,
+#      se muestra el error de pandoc.
+#
+#   No toca: los bloques de código (``` o ~~~), el código en línea (`...`),
+#   las fórmulas $$...$$ ni los entornos de LaTeX (\begin...\end).
 #
 #   Cómo funciona: arma la versión normalizada, muestra las diferencias y
 #   pregunta antes de guardar (y o ENTER aceptan). Si no hay nada que cambiar,
@@ -263,6 +285,81 @@ sub arreglar_tabla {    # recibe las líneas de una tabla, devuelve las nuevas
 # --- Recorrido línea por línea ---
 my @in = <STDIN>;
 chomp @in;
+
+# --- Cabecera YAML ---
+# Solo se tocan las claves de primer nivel ("clave: valor" sin sangría). Las
+# listas, los valores anidados y los bloques (| o >) quedan como están.
+sub aviso { warn "   ⚠️  $_[0]\n"; }
+
+sub arreglar_valor {    # devuelve el valor arreglado, o undef si está bien
+  my ($v) = @_;
+  my $t = $v; $t =~ s/\s+$//;
+  return undef if $t eq "";
+  return undef if $t =~ /^[|>][-+0-9]*$/;                 # bloque | o >
+  if ($t =~ /^"/) {                                       # entre comillas dobles
+    my $sin = $t; $sin =~ s/\\.//g;
+    my $n = () = $sin =~ /"/g;
+    return $n % 2 ? qq{$t"} : undef;                      # cierra la que falta
+  }
+  if ($t =~ /^'/) {                                       # entre comillas simples
+    my $sin = $t; $sin =~ s/''//g;
+    my $n = () = $sin =~ /'/g;
+    return $n % 2 ? qq{$t'} : undef;
+  }
+  return undef if $t =~ /^\[.*\]$/ || $t =~ /^\{.*\}$/;  # lista [a, b] o {...}
+  my $hace_falta =
+       $t =~ /:\s/ || $t =~ /:$/         # dos puntos seguidos de espacio, o al final
+    || $t =~ /\s#/                       # " #": el resto sería un comentario
+    || $t =~ /^[\@`\[\{*&!%?,|>]/        # empieza con un carácter especial
+    || $t =~ /^-\s/;                     # "- algo" (parece una lista)
+  return undef unless $hace_falta;
+  (my $e = $t) =~ s/'/''/g;
+  return "'$e'";
+}
+
+if (@in && $in[0] =~ /^---\s*$/) {
+  my $cierre;
+  for my $k (1..$#in) { if ($in[$k] =~ /^(---|\.\.\.)\s*$/) { $cierre = $k; last; } }
+  if (!defined $cierre) {
+    # Falta el --- de cierre: la cabecera termina en la primera línea en
+    # blanco (o en la primera que no parece YAML).
+    my $k = 1;
+    while ($k < @in && $in[$k] =~ /\S/ &&
+           ($in[$k] =~ /^\s/ || $in[$k] =~ /^-\s/ || $in[$k] =~ /^[\w-]+\s*:/ || $in[$k] =~ /^#/)) { $k++; }
+    if ($k > 1) {
+      splice @in, $k, 0, ($in[0] =~ /\r$/ ? "---\r" : "---");
+      $cierre = $k;
+      aviso("Faltaba el --- que cierra la cabecera: lo agregué después de la línea $k.");
+    }
+  }
+  if (defined $cierre) {
+    my (%visto);
+    for my $k (1..$cierre-1) {
+      my $l = $in[$k];
+      my $cr = $l =~ s/\r$// ? "\r" : "";
+      if ($l =~ /^\s/ || $l !~ /\S/) { $in[$k] = $l . $cr; next; }   # anidado o vacío
+      if ($l =~ /^([\w-]+):(\S.*)$/ && $l !~ /^[\w-]+:\/\//) {
+        aviso("Línea " . ($k+1) . ": faltaba el espacio después de \"$1:\".");
+        $l = "$1: $2";
+      }
+      if ($l =~ /^([\w-]+):(\s*)(.*)$/) {
+        my ($clave, $esp, $valor) = ($1, $2, $3);
+        push @{ $visto{$clave} }, $k+1;
+        my $nuevo = arreglar_valor($valor);
+        if (defined $nuevo) {
+          aviso("Línea " . ($k+1) . ": " . ($valor =~ /^["']/ ? "cerré la comilla de" : "puse entre comillas") . " \"$clave\" ($nuevo).");
+          $l = "$clave: $nuevo";
+        }
+      }
+      $in[$k] = $l . $cr;
+    }
+    for my $clave (sort keys %visto) {
+      my @ls = @{ $visto{$clave} };
+      aviso("\"$clave\" está repetida (líneas " . join(", ", @ls) . "): pandoc usa la última. Borrá la que sobre.") if @ls > 1;
+    }
+  }
+}
+
 my @out;
 my ($en_yaml, $en_codigo, $cerca, $en_math, $en_latex) = (0, 0, "", 0, 0);
 my $en_lista = 0;     # dentro de una lista que ya empezó
@@ -313,7 +410,10 @@ for (my $i = 0; $i < @in; $i++) {
     next;
   }
 
-  if ($l =~ $item) {
+  if ($l =~ /^#{1,6}\s+\S/) {           # título: siempre con una línea en blanco antes
+    blanco_antes();
+    $en_lista = 0; $en_cita = 0;
+  } elsif ($l =~ $item) {
     if (!$en_lista && $l =~ $item_inicio) { blanco_antes(); }
     $en_lista = 1 if $en_lista || $l =~ $item_inicio || ($out[-1] // "") !~ /\S/;
     $en_cita = 0;
@@ -352,8 +452,22 @@ for archivo in "${archivos[@]}"; do
   if [[ -s $archivo && "$(tail -c 1 -- "$archivo")" != "" ]]; then
     printf '%s' "$(<"$temporal")" > "$temporal"
   fi
+  # Si pandoc está, se comprueba que la cabecera YAML se pueda leer.
+  error_yaml=""
+  if (( $+commands[pandoc] )) && [[ "$(head -n 1 -- "$temporal")" == ---* ]]; then
+    error_yaml=$(pandoc -f markdown -t plain -o /dev/null -- "$temporal" 2>&1 | grep -i -A3 'yaml')
+    if [[ -n $error_yaml ]]; then
+      echo "   ❌ La cabecera YAML sigue con un error que no pude arreglar solo"
+      echo "      (pandoc cuenta las líneas desde la que sigue al primer ---):"
+      print -r -- "$error_yaml" | sed 's/^/      /'
+    fi
+  fi
   if cmp -s -- "$archivo" "$temporal"; then
-    echo "   ✔ Ya estaba bien, sin cambios."
+    if [[ -n $error_yaml ]]; then
+      echo "   No hay nada más para cambiar."
+    else
+      echo "   ✔ Ya estaba bien, sin cambios."
+    fi
     rm -f "$temporal"; continue
   fi
   mostrar_cambios "$archivo" "$temporal"

@@ -46,9 +46,9 @@
 #                              imágenes no están al lado del .md ni dentro del
 #                              vault o repositorio de la nota)
 #
-# NOTAS DE OBSIDIAN:
-#   Si un .md tiene sintaxis de Obsidian ([[...]]) o imágenes, antes de pasarlo a pandoc
-#   se traduce a Markdown estándar en una copia temporal (el .md no se toca):
+# SINTAXIS QUE PANDOC NO ENTIENDE (Obsidian, GitHub, Notion...):
+#   Si un .md tiene enlaces [[...]], imágenes o avisos > [!NOTE], antes de
+#   pasarlo a pandoc se traduce en una copia temporal (el .md no se toca):
 #       ![[foto.png]]         ->  la imagen
 #       ![[foto.png|400]]     ->  la imagen con 400 px de ancho
 #       ![[foto.png|derecha]] ->  la imagen pegada a la derecha ("izquierda"
@@ -70,8 +70,15 @@
 #   que es lo que Obsidian escribe si desactivás los wikilinks (con %20 en vez
 #   de espacios): si el archivo no está donde dice la ruta, se busca por nombre
 #   en el vault. Si la ruta existe tal cual, no se toca nada.
+#   Si el texto de una imagen es solo el nombre del archivo
+#   (![image.png](...), como exporta Notion), no se usa: pandoc lo pondría de
+#   epígrafe. Los acentos de la ruta se aceptan escritos de las dos formas
+#   que existen en Unicode (las exportaciones de Notion a veces usan la otra).
+#   Avisos de GitHub y callouts de Obsidian:
+#       > [!NOTE]             ->  > **Nota**   (el tipo, traducido)
+#       > [!tip] Mi título    ->  > **Mi título**
 #   Dentro de bloques de código y de `código en línea` no se cambia nada.
-#   Los .md sin [[ ]] ni imágenes pasan directo a pandoc, sin traducción.
+#   Los .md sin [[ ]], imágenes ni avisos pasan directo a pandoc, sin traducción.
 #
 # CÓDIGO DE SALIDA:
 #   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló o si
@@ -230,7 +237,7 @@ carpeta_de_busqueda() {
 read -r -d '' TRADUCIR_OBSIDIAN <<'PERL'
 use strict; use warnings; use utf8;
 use File::Find; use File::Basename qw(basename); use File::Spec;
-use Encode qw(encode decode);
+use Encode qw(encode decode); use Unicode::Normalize qw(NFC NFD);
 # Las rutas se manejan como texto (decodificado) y se codifican en UTF-8 solo
 # al preguntarle algo al sistema de archivos, para que anden acentos y eñes.
 sub fs  { encode("UTF-8", $_[0]) }
@@ -247,7 +254,7 @@ sub indice_de {
   my %ind; my $raiz = fs($dir);
   find({ no_chdir => 1, wanted => sub {
     if (-d $_ && basename($_) =~ /^\./ && $_ ne $raiz) { $File::Find::prune = 1; return; }
-    if (-f $_) { my $r = txt($_); push @{ $ind{basename($r)} }, $r; }
+    if (-f $_) { my $r = txt($_); push @{ $ind{NFC(basename($r))} }, $r; }
   } }, $raiz);
   return $indices{$dir} = \%ind;
 }
@@ -257,13 +264,17 @@ sub indice_de {
 # subcarpetas) y por último por nombre en todo el vault.
 sub buscar {
   my ($ruta) = @_;
+  # Los acentos pueden estar escritos de dos formas ("á" o "a" + tilde, como
+  # en algunas exportaciones de Notion): se prueban las dos.
   for my $dir ($carpeta, @extras, $base) {
-    return "$dir/$ruta" if -f fs("$dir/$ruta");
+    for my $v ($ruta, NFC($ruta), NFD($ruta)) {
+      return "$dir/$v" if -f fs("$dir/$v");
+    }
   }
   my $fin = "/$ruta";                               # si se escribió carpeta/foto.png
   for my $dir (@extras, $base) {
-    my @c = @{ indice_de($dir)->{basename($ruta)} || [] };
-    my @exactos = grep { substr($_, -length($fin)) eq $fin } @c;
+    my @c = @{ indice_de($dir)->{NFC(basename($ruta))} || [] };
+    my @exactos = grep { my $n = NFC($_); substr($n, -length($fin)) eq NFC($fin) } @c;
     @c = @exactos if @exactos;
     # Si hay varias con el mismo nombre, la más cercana a la nota: la que está
     # a menos carpetas de distancia (contando las subidas con ..).
@@ -318,19 +329,42 @@ sub imagen_estandar {
   my $dec = fs($d);
   $dec =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
   $dec = txt($dec);                                   # bytes UTF-8 -> texto
-  return $original if -f fs("$carpeta/$d") || -f fs("$carpeta/$dec");
+  # Si el texto es solo el nombre del archivo ("image.png", como lo exporta
+  # Notion), no se usa: pandoc lo pondría de epígrafe ("Figura 1: image.png").
+  my $alt_nuevo = (NFC(lc $alt) eq NFC(lc basename($dec))
+                   || $alt =~ /^\s*(?:untitled|image|imagen)(?:\.\w{3,4})?\s*$/i) ? "" : $alt;
+  my $resto = defined $titulo ? $titulo : "";
+  if (-f fs("$carpeta/$d") || -f fs("$carpeta/$dec")) {
+    return $alt_nuevo eq $alt ? $original : "![$alt_nuevo]($dest$resto)";
+  }
   my $ruta = buscar($dec);
   return $original unless defined $ruta;
-  return "![$alt](<$ruta>" . (defined $titulo ? $titulo : "") . ")";
+  return "![$alt_nuevo](<$ruta>$resto)";
 }
 
 # Un bloque de código se cierra con la misma marca con que se abrió (``` o
 # ~~~, de al menos el mismo largo): un ~~~ dentro de un ``` no lo cierra.
+my %TIPOS = (note => "Nota", info => "Información", tip => "Consejo", hint => "Consejo",
+  important => "Importante", warning => "Advertencia", caution => "Precaución",
+  attention => "Atención", danger => "Peligro", error => "Error", bug => "Error",
+  example => "Ejemplo", quote => "Cita", cite => "Cita", question => "Pregunta",
+  faq => "Pregunta", help => "Pregunta", success => "Hecho", check => "Hecho",
+  done => "Hecho", failure => "Falla", fail => "Falla", missing => "Falta",
+  todo => "Pendiente", abstract => "Resumen", summary => "Resumen", tldr => "Resumen");
 my $cerca = "";
 sub cierra { $_[0] =~ /^\s*(`+|~+)\s*$/ && substr($1, 0, 1) eq substr($_[1], 0, 1) && length($1) >= length($_[1]) }
 while (my $linea = <STDIN>) {
   if ($cerca ne "") { print $linea; $cerca = "" if cierra($linea, $cerca); next; }
   if ($linea =~ /^\s*(```+|~~~+)/) { $cerca = $1; print $linea; next; }
+  # Avisos de GitHub y callouts de Obsidian: "> [!NOTE] Título". Pandoc los
+  # muestra como una cita con "[!NOTE]" a la vista: queda el título en negrita
+  # (o el tipo, traducido, si no tiene título). El +/- de plegado se ignora.
+  $linea =~ s{^(\s*(?:>\s*)+)\[!(\w+)\][-+]?[ \t]*(.*?)[ \t]*$}{
+    my ($pre, $tipo, $titulo) = ($1, lc $2, $3);
+    $titulo = $TIPOS{$tipo} // ucfirst($tipo) if $titulo eq "";
+    (my $vacia = $pre) =~ s/\s+$//;               # línea de cita vacía: el título va solo
+    "$pre**$titulo**\n$vacia"
+  }e;
   # `código` se deja igual; ![[...]] y [[...]] se traducen
   $linea =~ s{(`+)(.*?)\1|(!?)\[\[([^\[\]\n]+?)\]\]|!\[([^\[\]\n]*)\]\((<[^>\n]+>|[^)\s]+)(\s+"[^"\n]*")?\)}{
     defined $1 ? "$1$2$1"
@@ -363,7 +397,7 @@ for archivo in "${archivos[@]}"; do
   salida="${archivo:r}.pdf"
   entrada="$archivo"
   temporal=""
-  if grep -q -e '\[\[' -e '!\[' -- "$archivo"; then
+  if grep -q -e '\[\[' -e '!\[' -e '\[!' -- "$archivo"; then
     temporal="$(mktemp --suffix=.md)"
     if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
          IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR_OBSIDIAN" < "$archivo" > "$temporal"; then

@@ -16,9 +16,12 @@
 #   1. Líneas en blanco que faltan. Pandoc NO reconoce una lista, una tabla o
 #      una cita (">") pegada al párrafo de arriba: la toma como texto común.
 #      Agrega una línea en blanco antes de:
-#        - una lista con viñetas (-, *, +) o numerada (1., 3., 1)...);
+#        - una lista con viñetas (-, *, +) o numerada (1., 3., 1)...; hasta
+#          3 cifras, así un año como "1810." al principio de una línea no se
+#          toma como lista);
 #        - una tabla;
-#        - una cita, y antes de una lista dentro de una cita (con ">");
+#        - una cita, una lista dentro de una cita (con ">") y una cita dentro
+#          de un ítem de lista;
 #        - y antes y después de una imagen sola en su línea (si no, pandoc
 #          la pega al texto de arriba y de abajo).
 #      Entre los ítems de una lista que ya empezó no agrega nada (la lista no
@@ -45,7 +48,7 @@
 #        - agrega columnas al encabezado y al separador para que entren todas
 #          las celdas (las de más quedan con encabezado vacío);
 #        - cambia los <br> de las celdas por un espacio (pandoc los borra y
-#          pega las palabras: "1<br>2" sale "12").
+#          pega las palabras: "1<br>2" sale "12"), salvo dentro de `código`.
 #      Solo se reescriben las líneas que tienen alguno de esos problemas; las
 #      demás quedan exactamente como estaban (alineación, espacios y anchos
 #      del separador incluidos).
@@ -114,23 +117,30 @@
 #          (title:) y las propiedades quedan una por renglón, visibles en el
 #          PDF. Avisa cuáles son: si no querés que salgan, pasalas a mano a
 #          la cabecera (ahí pandoc las guarda pero no las muestra).
+#          Solo se hace si la nota es de Notion (el nombre del archivo
+#          termina con el código de 32 letras y números que agrega Notion) o
+#          si tiene al menos 2 propiedades cortas; así una nota común que
+#          empieza con "# Título" y un párrafo como "Definición: ..." no se
+#          toca.
 #        - Callouts (<aside> ... </aside>): pasan a ser una cita (>); si no,
 #          pandoc borra las etiquetas y queda un párrafo común.
 #
 #   No toca: los bloques de código (``` o ~~~), el código en línea (`...`),
 #   las fórmulas $$...$$ ni los entornos de LaTeX (\begin...\end).
 #
-#   Cómo funciona: arma la versión normalizada, muestra las diferencias y
-#   pregunta antes de guardar (y o ENTER aceptan). Si no hay nada que cambiar,
-#   lo dice y no toca el archivo. Pasar el script dos veces da lo mismo que
-#   pasarlo una.
+#   Cómo funciona: arma la versión normalizada, muestra los avisos y cuántas
+#   líneas cambian, y pregunta antes de guardar (y o ENTER aceptan). Las
+#   diferencias línea por línea solo se muestran con -v. Si no hay nada que
+#   cambiar, lo dice y no toca el archivo. Pasar el script dos veces da lo
+#   mismo que pasarlo una.
 #
 # USO:
-#   mdnorm nota.md            (Normaliza un archivo, mostrando los cambios)
+#   mdnorm nota.md            (Normaliza un archivo; pregunta antes de guardar)
 #   mdnorm a.md b.md          (Varios archivos; pregunta por cada uno)
 #   mdnorm                    (Todos los .md de la carpeta actual)
-#   mdnorm -n nota.md         (-n o --mostrar: solo muestra los cambios, no
-#                              guarda nada)
+#   mdnorm -v nota.md         (-v o --verbose: muestra además los cambios
+#                              línea por línea antes de preguntar; si no te
+#                              convencen, respondés que no y queda como estaba)
 #   mdnorm -y nota.md         (-y o --yes: guarda sin preguntar)
 #
 # CÓDIGO DE SALIDA:
@@ -159,16 +169,12 @@ done
 # --- Opciones -----------------------------------------------------------------
 # zparseopts saca las opciones de los argumentos (-E: en cualquier posición);
 # -F falla con una opción que no existe. Un "--" suelto se descarta.
-uso="Uso: mdnorm [-y | -n] [archivo.md ...]"
-zparseopts -D -E -F -- y=opcion_y -yes=opcion_y n=opcion_n -mostrar=opcion_n 2>/dev/null || {
+uso="Uso: mdnorm [-y] [-v] [archivo.md ...]"
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y v=opcion_v -verbose=opcion_v 2>/dev/null || {
   echo "❌ Opción no válida. $uso"
   exit 1
 }
 [[ $1 == -- ]] && shift
-if (( $#opcion_y && $#opcion_n )); then
-  echo "❌ -y y -n no van juntas. $uso"
-  exit 1
-fi
 
 # --- 1. Lista de archivos -----------------------------------------------------
 archivos=()
@@ -702,10 +708,17 @@ for (my $i = 0; $i < @in; $i++) {
     my $j = $i + 2;
     while ($j < @in && $in[$j] =~ /\S/ && $in[$j] =~ /\|/) {
       my $fila = $in[$j];
-      # ¿Fila partida? No termina con | (el encabezado sí), le faltan celdas y
-      # la línea de abajo no empieza otra fila (está en blanco o no empieza
-      # con | en la primera columna).
-      if ($con_cierre && $fila !~ /\|\s*\r?$/ && (() = celdas($fila)) < $n
+      # ¿Fila partida? No termina con | (el encabezado sí), la línea de abajo
+      # no empieza otra fila (está en blanco o no empieza con | en la primera
+      # columna), y además le faltan celdas o la siguiente línea con texto es
+      # un pedazo de fila (empieza con espacios y | o con <br>). Esto último
+      # hace falta en las tablas de 2 columnas, donde la primera línea de la
+      # fila partida ya tiene todas las celdas y solo le falta el | final.
+      my $siguiente = $j + 1;
+      $siguiente++ while $siguiente < @in && $in[$siguiente] !~ /\S/;
+      my $pedazo = $siguiente < @in && $in[$siguiente] =~ /^\s+\||^\s*<br\s*\/?>/i;
+      my $faltan_celdas = (() = celdas($fila)) < $n;
+      if ($con_cierre && $fila !~ /\|\s*\r?$/ && ($faltan_celdas || $pedazo)
           && ($j + 1 >= @in || $in[$j+1] !~ /^\|/)) {
         my ($unida, $k) = unir_fila($j, $n);
         if (defined $unida) {
@@ -822,10 +835,13 @@ for archivo in "${archivos[@]}"; do
     fi
     rm -f "$temporal"; continue
   fi
-  mostrar_cambios "$archivo" "$temporal"
-  if (( $#opcion_n )); then
-    echo "   (Solo se muestran los cambios: no se guardó nada.)"
-    rm -f "$temporal"; continue
+  # Por defecto, solo cuántas líneas cambian; con -v, los cambios completos.
+  # (Se cuentan las líneas de la versión nueva que son nuevas o distintas.)
+  if (( $#opcion_v )); then
+    mostrar_cambios "$archivo" "$temporal"
+  else
+    cambiadas=$(diff -- "$archivo" "$temporal" | grep -c '^>')
+    echo "   $cambiadas línea(s) nueva(s) o cambiada(s). Para ver el detalle: mdnorm -v."
   fi
   if (( ! $#opcion_y )); then
     read "respuesta?¿Guardar los cambios en $archivo? [Y/n]: " || respuesta=n

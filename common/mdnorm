@@ -120,17 +120,20 @@
 #   No toca: los bloques de código (``` o ~~~), el código en línea (`...`),
 #   las fórmulas $$...$$ ni los entornos de LaTeX (\begin...\end).
 #
-#   Cómo funciona: arma la versión normalizada, muestra las diferencias y
-#   pregunta antes de guardar (y o ENTER aceptan). Si no hay nada que cambiar,
-#   lo dice y no toca el archivo. Pasar el script dos veces da lo mismo que
-#   pasarlo una.
+#   Cómo funciona: arma la versión normalizada, muestra los avisos y cuántas
+#   líneas cambian, y pregunta antes de guardar (y o ENTER aceptan). Las
+#   diferencias línea por línea solo se muestran con -v. Si no hay nada que
+#   cambiar, lo dice y no toca el archivo. Pasar el script dos veces da lo
+#   mismo que pasarlo una.
 #
 # USO:
-#   mdnorm nota.md            (Normaliza un archivo, mostrando los cambios)
+#   mdnorm nota.md            (Normaliza un archivo; pregunta antes de guardar)
 #   mdnorm a.md b.md          (Varios archivos; pregunta por cada uno)
 #   mdnorm                    (Todos los .md de la carpeta actual)
-#   mdnorm -n nota.md         (-n o --mostrar: solo muestra los cambios, no
-#                              guarda nada)
+#   mdnorm -v nota.md         (-v o --verbose: muestra además los cambios
+#                              línea por línea antes de preguntar)
+#   mdnorm -n nota.md         (-n o --mostrar: no guarda nada, solo dice qué
+#                              cambiaría; con -v muestra los cambios)
 #   mdnorm -y nota.md         (-y o --yes: guarda sin preguntar)
 #
 # CÓDIGO DE SALIDA:
@@ -159,8 +162,9 @@ done
 # --- Opciones -----------------------------------------------------------------
 # zparseopts saca las opciones de los argumentos (-E: en cualquier posición);
 # -F falla con una opción que no existe. Un "--" suelto se descarta.
-uso="Uso: mdnorm [-y | -n] [archivo.md ...]"
-zparseopts -D -E -F -- y=opcion_y -yes=opcion_y n=opcion_n -mostrar=opcion_n 2>/dev/null || {
+uso="Uso: mdnorm [-y | -n] [-v] [archivo.md ...]"
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y n=opcion_n -mostrar=opcion_n \
+    v=opcion_v -verbose=opcion_v 2>/dev/null || {
   echo "❌ Opción no válida. $uso"
   exit 1
 }
@@ -822,9 +826,16 @@ for archivo in "${archivos[@]}"; do
     fi
     rm -f "$temporal"; continue
   fi
-  mostrar_cambios "$archivo" "$temporal"
+  # Por defecto, solo cuántas líneas cambian; con -v, los cambios completos.
+  # (Se cuentan las líneas de la versión nueva que son nuevas o distintas.)
+  if (( $#opcion_v )); then
+    mostrar_cambios "$archivo" "$temporal"
+  else
+    cambiadas=$(diff -- "$archivo" "$temporal" | grep -c '^>')
+    echo "   $cambiadas línea(s) nueva(s) o cambiada(s). Para ver el detalle: mdnorm -v."
+  fi
   if (( $#opcion_n )); then
-    echo "   (Solo se muestran los cambios: no se guardó nada.)"
+    echo "   (No se guardó nada.)"
     rm -f "$temporal"; continue
   fi
   if (( ! $#opcion_y )); then

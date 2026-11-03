@@ -131,9 +131,8 @@
 #   mdnorm a.md b.md          (Varios archivos; pregunta por cada uno)
 #   mdnorm                    (Todos los .md de la carpeta actual)
 #   mdnorm -v nota.md         (-v o --verbose: muestra además los cambios
-#                              línea por línea antes de preguntar)
-#   mdnorm -n nota.md         (-n o --mostrar: no guarda nada, solo dice qué
-#                              cambiaría; con -v muestra los cambios)
+#                              línea por línea antes de preguntar; si no te
+#                              convencen, respondés que no y queda como estaba)
 #   mdnorm -y nota.md         (-y o --yes: guarda sin preguntar)
 #
 # CÓDIGO DE SALIDA:
@@ -162,17 +161,12 @@ done
 # --- Opciones -----------------------------------------------------------------
 # zparseopts saca las opciones de los argumentos (-E: en cualquier posición);
 # -F falla con una opción que no existe. Un "--" suelto se descarta.
-uso="Uso: mdnorm [-y | -n] [-v] [archivo.md ...]"
-zparseopts -D -E -F -- y=opcion_y -yes=opcion_y n=opcion_n -mostrar=opcion_n \
-    v=opcion_v -verbose=opcion_v 2>/dev/null || {
+uso="Uso: mdnorm [-y] [-v] [archivo.md ...]"
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y v=opcion_v -verbose=opcion_v 2>/dev/null || {
   echo "❌ Opción no válida. $uso"
   exit 1
 }
 [[ $1 == -- ]] && shift
-if (( $#opcion_y && $#opcion_n )); then
-  echo "❌ -y y -n no van juntas. $uso"
-  exit 1
-fi
 
 # --- 1. Lista de archivos -----------------------------------------------------
 archivos=()
@@ -833,10 +827,6 @@ for archivo in "${archivos[@]}"; do
   else
     cambiadas=$(diff -- "$archivo" "$temporal" | grep -c '^>')
     echo "   $cambiadas línea(s) nueva(s) o cambiada(s). Para ver el detalle: mdnorm -v."
-  fi
-  if (( $#opcion_n )); then
-    echo "   (No se guardó nada.)"
-    rm -f "$temporal"; continue
   fi
   if (( ! $#opcion_y )); then
     read "respuesta?¿Guardar los cambios en $archivo? [Y/n]: " || respuesta=n

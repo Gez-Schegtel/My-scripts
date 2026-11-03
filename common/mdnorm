@@ -34,15 +34,18 @@
 #      blanco antes. Las etiquetas de Obsidian (#etiqueta, sin espacio) no son
 #      títulos y no se tocan.
 #
-#   3. Tablas. Pandoc borra SIN AVISAR las columnas de más: si una fila tiene
-#      más celdas que el encabezado, o si la línea separadora (|---|---|) tiene
-#      menos columnas que el encabezado. Y si una celda tiene <br>, lo borra y
-#      pega las palabras ("1<br>2" sale "12"). En esos casos:
+#   3. Tablas. En Markdown cada fila de una tabla va en UNA sola línea.
+#      Cuando una fila está partida en varias (pasa al copiar de una página
+#      web o de un chat), pandoc corta la tabla ahí y el resto sale como texto
+#      suelto. Además, pandoc borra SIN AVISAR las columnas de más: si una fila
+#      tiene más celdas que el encabezado, o si la línea separadora
+#      (|---|---|) tiene menos columnas que el encabezado. Entonces:
+#        - junta en una sola línea cada fila partida, uniendo las partes con
+#          un espacio (los <br> de esa fila pasan a ser un espacio);
 #        - agrega columnas al encabezado y al separador para que entren todas
 #          las celdas (las de más quedan con encabezado vacío);
-#        - cambia los <br> de las celdas por un espacio;
-#        - junta en una sola línea las filas partidas en varias líneas (con
-#          líneas en blanco en el medio), que pandoc corta en pedazos.
+#        - cambia los <br> de las celdas por un espacio (pandoc los borra y
+#          pega las palabras: "1<br>2" sale "12").
 #      Solo se reescriben las líneas que tienen alguno de esos problemas; las
 #      demás quedan exactamente como estaban (alineación, espacios y anchos
 #      del separador incluidos).
@@ -594,6 +597,35 @@ sub saltos_html {
   return join("\\$cr\n", @partes) . $cr;
 }
 
+# Fila de tabla partida en varias líneas (pasa al copiar de una página web o de
+# un chat): se juntan las líneas hasta que la fila termina con | y tiene todas
+# las celdas. Las partes se unen con un espacio y los <br> de esa fila pasan
+# a ser un espacio (pandoc los borra del PDF y pegaría las palabras).
+sub juntar {
+  my $r = shift;
+  for my $p (@_) {
+    next if $p =~ /^<br\s*\/?>$/i;
+    $r = ($r eq '') ? $p : "$r $p";
+  }
+  $r =~ s/\s*<br\s*\/?>\s*/ /gi;      # los <br> sueltos dentro de la fila: un espacio
+  return $r;
+}
+sub unir_fila {    # devuelve (fila unida, última línea usada) o nada
+  my ($j, $n) = @_;
+  my @trozos;
+  for (my $k = $j; $k < @in && $k < $j + 100; $k++) {
+    my $x = $in[$k]; $x =~ s/\r$//;
+    # Un título, un bloque de código o una línea --- cortan la búsqueda.
+    return if $k > $j && $x =~ /^\s*(#{1,6}\s|```|~~~|---\s*$)/;
+    next if $x !~ /\S/;
+    $x =~ s/^\s+|\s+$//g;
+    push @trozos, $x;
+    my $fila = juntar(@trozos);
+    return ($fila, $k) if $fila =~ /\|$/ && scalar(my @c = celdas($fila)) >= $n;
+  }
+  return;
+}
+
 for (my $i = 0; $i < @in; $i++) {
   my $l = $in[$i];
   if ($blanco_despues && $l =~ /\S/) { blanco_antes(); }
@@ -647,33 +679,26 @@ for (my $i = 0; $i < @in; $i++) {
   if ($l =~ /\|/ && $i + 1 < @in && es_separador($in[$i+1]) && !es_separador($l)) {
     my ($sangria) = $l =~ /^(\s*)/;
     my @t = ($l, $in[$i+1]);
+    my $n = () = celdas($l);
+    my $con_cierre = $l =~ /\|\s*\r?$/;      # el encabezado termina con |
     my $j = $i + 2;
-    # Tabla con | al principio y al final de cada fila: una fila que no
-    # termina en | y tiene menos celdas que el encabezado está partida en
-    # varias líneas (pasa al pegar tablas de otro lado). Pandoc la corta en la
-    # primera línea en blanco y el resto sale como párrafos sueltos. Se junta
-    # en una sola línea, si más abajo aparece el | que la cierra.
-    my $cerrada = $l =~ /^\s*\|/ && $l =~ /\|\s*$/;
-    my $ncel = () = celdas($l);
     while ($j < @in && $in[$j] =~ /\S/ && $in[$j] =~ /\|/) {
-      if ($cerrada && $in[$j] =~ /^\s*\|/ && $in[$j] !~ /\|\s*$/ && celdas($in[$j]) < $ncel) {
-        my $k = $j + 1;
-        $k++ while $k < @in && $k < $j + 80 && $in[$k] !~ /\|\s*$/
-                   && $in[$k] !~ /^\s*(```|~~~)/ && $in[$k] !~ /^#{1,6}\s/;
-        if ($k < @in && $in[$k] =~ /\|\s*$/) {
-          my $cr = $in[$j] =~ /\r$/ ? "\r" : "";
-          my @partes = grep { /\S/ } map {
-            my $p = $_; $p =~ s/^\s+|\s+$//g;
-            $p =~ s/^(?:<br\s*\/?>\s*)+|(?:\s*<br\s*\/?>)+$//gi; $p
-          } @in[$j..$k];
-          my $junta = join(" ", @partes);
-          if (celdas($junta) == $ncel) {
-            aviso("Líneas " . ($j+1) . "-" . ($k+1) . ": una fila de la tabla estaba partida en varias líneas; la junté en una.");
-            push @t, $junta . $cr; $j = $k + 1; next;
-          }
+      my $fila = $in[$j];
+      # ¿Fila partida? No termina con | (el encabezado sí), le faltan celdas y
+      # la línea de abajo no empieza otra fila (está en blanco o no empieza
+      # con | en la primera columna).
+      if ($con_cierre && $fila !~ /\|\s*\r?$/ && (() = celdas($fila)) < $n
+          && ($j + 1 >= @in || $in[$j+1] !~ /^\|/)) {
+        my ($unida, $k) = unir_fila($j, $n);
+        if (defined $unida) {
+          aviso("Línea " . ($j+1) . ": la fila de la tabla estaba partida en " . ($k-$j+1) . " líneas; la junté en una.");
+          push @t, $unida . $vacia;
+          $j = $k + 1;
+          next;
         }
+        aviso("Línea " . ($j+1) . ": parece una fila de tabla partida en varias líneas, pero no la pude juntar. Revisala a mano.");
       }
-      push @t, $in[$j]; $j++;
+      push @t, $fila; $j++;
     }
     blanco_antes();
     push @out, map { imagenes_en_linea($_) } arreglar_tabla($sangria, @t);

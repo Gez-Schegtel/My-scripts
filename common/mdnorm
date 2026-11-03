@@ -108,7 +108,9 @@
 #          "# Título" y debajo las propiedades ("Created: ...", "Tags: ...").
 #          Pandoc toma el título como una sección más y junta las
 #          propiedades en un renglón. El título pasa a la cabecera
-#          (title:) y las propiedades quedan una por renglón.
+#          (title:) y las propiedades quedan una por renglón, visibles en el
+#          PDF. Avisa cuáles son: si no querés que salgan, pasalas a mano a
+#          la cabecera (ahí pandoc las guarda pero no las muestra).
 #        - Callouts (<aside> ... </aside>): pasan a ser una cita (>); si no,
 #          pandoc borra las etiquetas y queda un párrafo común.
 #
@@ -432,7 +434,11 @@ my $bom = (@in && $in[0] =~ s/^\x{FEFF}//) ? "\x{FEFF}" : "";
       $_ .= "\\" for @props[0..$#props-1];                 # un renglón por propiedad
       my $valor = arreglar_valor($titulo) // $titulo;
       splice @in, $p, $j - $p, map { "$_$cr" } ("---", "title: $valor", "---", "", @props);
-      aviso("Encabezado de Notion: pasé el título \"$titulo\" a la cabecera YAML (title:).");
+      my @nombres = map { /^([^:]+):/ ? $1 : () } @props;
+      aviso("Encabezado de Notion: pasé el título \"$titulo\" a la cabecera YAML (title:).\n"
+          . "      Las propiedades (" . join(", ", @nombres) . ") quedaron como texto al principio,\n"
+          . "      así que salen en el PDF. Si no querés que salgan, pasalas a la cabecera\n"
+          . "      (entre los ---): pandoc las guarda ahí pero no las muestra.");
     }
   }
 }

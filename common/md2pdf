@@ -313,7 +313,9 @@ sub imagen_estandar {
   my $d = $dest;
   $d =~ s/^<(.*)>$/$1/;
   return $original if $d =~ m{^(?:[a-zA-Z][a-zA-Z0-9+.\-]*:|/|\#)};   # URL, ruta absoluta
-  my $dec = $d;
+  # %XX son bytes de UTF-8: se decodifican sobre los bytes de la ruta (no sobre
+  # el texto), así anda también si la ruta tiene acentos o emojis sin codificar.
+  my $dec = fs($d);
   $dec =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;
   $dec = txt($dec);                                   # bytes UTF-8 -> texto
   return $original if -f fs("$carpeta/$d") || -f fs("$carpeta/$dec");
@@ -322,10 +324,13 @@ sub imagen_estandar {
   return "![$alt](<$ruta>" . (defined $titulo ? $titulo : "") . ")";
 }
 
-my $en_codigo = 0;
+# Un bloque de código se cierra con la misma marca con que se abrió (``` o
+# ~~~, de al menos el mismo largo): un ~~~ dentro de un ``` no lo cierra.
+my $cerca = "";
+sub cierra { $_[0] =~ /^\s*(`+|~+)\s*$/ && substr($1, 0, 1) eq substr($_[1], 0, 1) && length($1) >= length($_[1]) }
 while (my $linea = <STDIN>) {
-  if ($linea =~ /^\s*(```|~~~)/) { $en_codigo = !$en_codigo; print $linea; next; }
-  if ($en_codigo) { print $linea; next; }
+  if ($cerca ne "") { print $linea; $cerca = "" if cierra($linea, $cerca); next; }
+  if ($linea =~ /^\s*(```+|~~~+)/) { $cerca = $1; print $linea; next; }
   # `código` se deja igual; ![[...]] y [[...]] se traducen
   $linea =~ s{(`+)(.*?)\1|(!?)\[\[([^\[\]\n]+?)\]\]|!\[([^\[\]\n]*)\]\((<[^>\n]+>|[^)\s]+)(\s+"[^"\n]*")?\)}{
     defined $1 ? "$1$2$1"
@@ -350,6 +355,10 @@ PERL
 # carpeta temporal); las imágenes normales se siguen buscando en la carpeta
 # del .md gracias a --resource-path.
 fallidos=()
+temporal=""
+# Borrar la copia temporal al salir, también si se cancela con Ctrl+C.
+trap 'rm -f -- ${temporal:+"$temporal"}' EXIT
+trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
 for archivo in "${archivos[@]}"; do
   salida="${archivo:r}.pdf"
   entrada="$archivo"

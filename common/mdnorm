@@ -253,7 +253,9 @@ sub revisar_estandar {
   my ($original, $dest) = @_;
   my $d = $dest; $d =~ s/^<(.*)>$/$1/;
   return $original if $d =~ m{^(?:[a-zA-Z][a-zA-Z0-9+.\-]*:|\#)};   # URL
-  my $dec = $d; $dec =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge; $dec = txt($dec);
+  # %XX son bytes de UTF-8: se decodifican sobre los bytes, no sobre el texto
+  # (si no, una ruta con acentos o emojis se rompía o hacía fallar el script).
+  my $dec = fs($d); $dec =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge; $dec = txt($dec);
   return $original if -f fs($d) && $d =~ m{^/};                      # absoluta
   return $original if -f fs("$carpeta/$d") || -f fs("$carpeta/$dec");
   return $original if $d !~ m{^/} && defined buscar($dec);
@@ -316,7 +318,8 @@ sub arreglar_tabla {    # recibe las líneas de una tabla, devuelve las nuevas
       # filas cortas pandoc las completa solo.
       if ($k == 0 && @f < $n) { push @f, "" while @f < $n; $cambia = 1; }
     }
-    push @res, $cambia ? $fila->(\@f) : $lineas[$k];
+    # Si la línea terminaba en \r (saltos de Windows), la reescrita también.
+    push @res, $cambia ? $fila->(\@f) . ($lineas[$k] =~ /\r$/ ? "\r" : "") : $lineas[$k];
   }
   return @res;
 }
@@ -419,7 +422,13 @@ for (my $i = 0; $i < @in; $i++) {
   if ($en_yaml) { push @out, $l; $en_yaml = 0 if $l =~ /^(---|\.\.\.)\s*$/; next; }
 
   # Bloques de código
-  if ($en_codigo) { push @out, $l; $en_codigo = 0 if $l =~ /^\s*\Q$cerca\E/; next; }
+  # Se cierra con la misma marca (``` o ~~~), de al menos el mismo largo y
+  # sin nada después: "```python" o un ~~~ dentro de un ``` no lo cierran.
+  if ($en_codigo) {
+    push @out, $l;
+    $en_codigo = 0 if $l =~ /^\s*(`+|~+)\s*$/ && substr($1, 0, 1) eq substr($cerca, 0, 1) && length($1) >= length($cerca);
+    next;
+  }
   if ($l =~ /^\s*(```+|~~~+)/) { $cerca = $1; $en_codigo = 1; push @out, $l; next; }
 
   # Fórmulas $$ ... $$ y entornos de LaTeX
@@ -484,6 +493,10 @@ mostrar_cambios() {
 fallidos=()
 con_faltantes=()
 cuenta="$(mktemp)"
+temporal=""
+# Borrar los temporales al salir, también si se cancela con Ctrl+C.
+trap 'rm -f -- "$cuenta" ${temporal:+"$temporal"}' EXIT
+trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
 for archivo in "${archivos[@]}"; do
   temporal="$(mktemp --suffix=.md)"
   echo "── $archivo"

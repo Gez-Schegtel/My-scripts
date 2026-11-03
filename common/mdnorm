@@ -39,7 +39,9 @@
 #      pega las palabras ("1<br>2" sale "12"). En esos casos:
 #        - agrega columnas al encabezado y al separador para que entren todas
 #          las celdas (las de más quedan con encabezado vacío);
-#        - cambia los <br> de las celdas por un espacio.
+#        - cambia los <br> de las celdas por un espacio;
+#        - junta en una sola línea las filas partidas en varias líneas (con
+#          líneas en blanco en el medio), que pandoc corta en pedazos.
 #      Solo se reescriben las líneas que tienen alguno de esos problemas; las
 #      demás quedan exactamente como estaban (alineación, espacios y anchos
 #      del separador incluidos).
@@ -527,7 +529,33 @@ for (my $i = 0; $i < @in; $i++) {
     my ($sangria) = $l =~ /^(\s*)/;
     my @t = ($l, $in[$i+1]);
     my $j = $i + 2;
-    while ($j < @in && $in[$j] =~ /\S/ && $in[$j] =~ /\|/) { push @t, $in[$j]; $j++; }
+    # Tabla con | al principio y al final de cada fila: una fila que no
+    # termina en | y tiene menos celdas que el encabezado está partida en
+    # varias líneas (pasa al pegar tablas de otro lado). Pandoc la corta en la
+    # primera línea en blanco y el resto sale como párrafos sueltos. Se junta
+    # en una sola línea, si más abajo aparece el | que la cierra.
+    my $cerrada = $l =~ /^\s*\|/ && $l =~ /\|\s*$/;
+    my $ncel = () = celdas($l);
+    while ($j < @in && $in[$j] =~ /\S/ && $in[$j] =~ /\|/) {
+      if ($cerrada && $in[$j] =~ /^\s*\|/ && $in[$j] !~ /\|\s*$/ && celdas($in[$j]) < $ncel) {
+        my $k = $j + 1;
+        $k++ while $k < @in && $k < $j + 80 && $in[$k] !~ /\|\s*$/
+                   && $in[$k] !~ /^\s*(```|~~~)/ && $in[$k] !~ /^#{1,6}\s/;
+        if ($k < @in && $in[$k] =~ /\|\s*$/) {
+          my $cr = $in[$j] =~ /\r$/ ? "\r" : "";
+          my @partes = grep { /\S/ } map {
+            my $p = $_; $p =~ s/^\s+|\s+$//g;
+            $p =~ s/^(?:<br\s*\/?>\s*)+|(?:\s*<br\s*\/?>)+$//gi; $p
+          } @in[$j..$k];
+          my $junta = join(" ", @partes);
+          if (celdas($junta) == $ncel) {
+            aviso("Líneas " . ($j+1) . "-" . ($k+1) . ": una fila de la tabla estaba partida en varias líneas; la junté en una.");
+            push @t, $junta . $cr; $j = $k + 1; next;
+          }
+        }
+      }
+      push @t, $in[$j]; $j++;
+    }
     blanco_antes();
     push @out, map { imagenes_en_linea($_) } arreglar_tabla($sangria, @t);
     $i = $j - 1; $en_lista = 0; $en_cita = 0; @niveles = ();
@@ -548,6 +576,10 @@ for (my $i = 0; $i < @in; $i++) {
     $en_lista = 1 if $en_lista || $l =~ $item_inicio || ($out[-1] // "") !~ /\S/;
     $en_cita = 0;
     $l = sangrar_item($l) if $en_lista;
+  } elsif ($en_lista && $l =~ /^\s+>/) {
+    # Cita dentro de un ítem de lista: también necesita una línea en blanco
+    # antes (si no, pandoc la pega al texto del ítem).
+    blanco_antes() if ($out[-1] // "") !~ /^\s*>/;
   } elsif ($l =~ $cita) {
     if (!$en_cita) { blanco_antes(); ($cita_lista, $cita_previa) = (0, ""); }
     # Dentro de la cita vale lo mismo: una lista pegada a la línea de arriba

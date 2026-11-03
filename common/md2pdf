@@ -90,7 +90,8 @@
 #     estilo (la lista completa está en el README del repositorio Pandoc config)
 #   - El repositorio Pandoc config instalado en la carpeta de datos de pandoc
 #     (para comprobarlo: pandoc --version | grep -i "user data")
-#   - perl, solo para las notas de Obsidian (viene instalado en Debian/Ubuntu).
+#   - perl, para traducir la sintaxis que pandoc no entiende (viene instalado
+#     en Debian/Ubuntu).
 #     git es opcional: si está, se usa para encontrar la raíz del repositorio.
 #
 # Instalación de dependencias en Debian/Ubuntu:
@@ -208,8 +209,9 @@ else
   esac
 fi
 
-# --- Traducción de la sintaxis de Obsidian -----------------------------------
-# Solo se usa con los .md que tienen [[ ]] (ver "NOTAS DE OBSIDIAN" arriba).
+# --- Traducción de la sintaxis que pandoc no entiende -------------------------
+# Solo se usa con los .md que tienen [[ ]], imágenes o avisos [!...] (ver
+# "SINTAXIS QUE PANDOC NO ENTIENDE" arriba).
 
 # Carpeta donde buscar imágenes por nombre: el vault de Obsidian (la carpeta
 # que contiene .obsidian/), si no el repositorio git. Si no hay ninguno, la
@@ -234,7 +236,7 @@ carpeta_de_busqueda() {
 
 # Programa en perl que hace la traducción. Lee el .md y escribe el resultado.
 # Variables que recibe: CARPETA_MD (carpeta del .md) y BASE (dónde buscar).
-read -r -d '' TRADUCIR_OBSIDIAN <<'PERL'
+read -r -d '' TRADUCIR <<'PERL'
 use strict; use warnings; use utf8;
 use File::Find; use File::Basename qw(basename); use File::Spec;
 use Encode qw(encode decode); use Unicode::Normalize qw(NFC NFD);
@@ -332,7 +334,7 @@ sub imagen_estandar {
   # Si el texto es solo el nombre del archivo ("image.png", como lo exporta
   # Notion), no se usa: pandoc lo pondría de epígrafe ("Figura 1: image.png").
   my $alt_nuevo = (NFC(lc $alt) eq NFC(lc basename($dec))
-                   || $alt =~ /^\s*(?:untitled|image|imagen)(?:\.\w{3,4})?\s*$/i) ? "" : $alt;
+                   || $alt =~ /^\s*(?:untitled|image|imagen|pasted image[^\]]*)(?:\.\w{3,4})?\s*$/i) ? "" : $alt;
   my $resto = defined $titulo ? $titulo : "";
   if (-f fs("$carpeta/$d") || -f fs("$carpeta/$dec")) {
     return $alt_nuevo eq $alt ? $original : "![$alt_nuevo]($dest$resto)";
@@ -342,8 +344,7 @@ sub imagen_estandar {
   return "![$alt_nuevo](<$ruta>$resto)";
 }
 
-# Un bloque de código se cierra con la misma marca con que se abrió (``` o
-# ~~~, de al menos el mismo largo): un ~~~ dentro de un ``` no lo cierra.
+# Nombre en castellano de cada tipo de aviso ([!NOTE], [!tip]...).
 my %TIPOS = (note => "Nota", info => "Información", tip => "Consejo", hint => "Consejo",
   important => "Importante", warning => "Advertencia", caution => "Precaución",
   attention => "Atención", danger => "Peligro", error => "Error", bug => "Error",
@@ -351,6 +352,8 @@ my %TIPOS = (note => "Nota", info => "Información", tip => "Consejo", hint => "
   faq => "Pregunta", help => "Pregunta", success => "Hecho", check => "Hecho",
   done => "Hecho", failure => "Falla", fail => "Falla", missing => "Falta",
   todo => "Pendiente", abstract => "Resumen", summary => "Resumen", tldr => "Resumen");
+# Un bloque de código se cierra con la misma marca con que se abrió (``` o
+# ~~~, de al menos el mismo largo): un ~~~ dentro de un ``` no lo cierra.
 my $cerca = "";
 sub cierra { $_[0] =~ /^\s*(`+|~+)\s*$/ && substr($1, 0, 1) eq substr($_[1], 0, 1) && length($1) >= length($_[1]) }
 while (my $linea = <STDIN>) {
@@ -359,7 +362,7 @@ while (my $linea = <STDIN>) {
   # Avisos de GitHub y callouts de Obsidian: "> [!NOTE] Título". Pandoc los
   # muestra como una cita con "[!NOTE]" a la vista: queda el título en negrita
   # (o el tipo, traducido, si no tiene título). El +/- de plegado se ignora.
-  $linea =~ s{^(\s*(?:>\s*)+)\[!(\w+)\][-+]?[ \t]*(.*?)[ \t]*$}{
+  $linea =~ s{^(\s*(?:>\s*)+)\[!(\w+)\][-+]?[ \t]*(.*?)[ \t\r]*$}{
     my ($pre, $tipo, $titulo) = ($1, lc $2, $3);
     $titulo = $TIPOS{$tipo} // ucfirst($tipo) if $titulo eq "";
     (my $vacia = $pre) =~ s/\s+$//;               # línea de cita vacía: el título va solo
@@ -385,7 +388,7 @@ PERL
 # ~/notas. ${archivo:h} es la carpeta del .md; después, las carpetas de -i, y
 # por último la actual.
 #
-# Si el .md tiene sintaxis de Obsidian, pandoc lee una copia traducida (en una
+# Si el .md tiene algo que traducir, pandoc lee una copia traducida (en una
 # carpeta temporal); las imágenes normales se siguen buscando en la carpeta
 # del .md gracias a --resource-path.
 fallidos=()
@@ -400,8 +403,8 @@ for archivo in "${archivos[@]}"; do
   if grep -q -e '\[\[' -e '!\[' -e '\[!' -- "$archivo"; then
     temporal="$(mktemp --suffix=.md)"
     if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
-         IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR_OBSIDIAN" < "$archivo" > "$temporal"; then
-      echo "❌ Error al traducir la sintaxis de Obsidian: $archivo"
+         IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR" < "$archivo" > "$temporal"; then
+      echo "❌ Error al traducir la sintaxis que pandoc no entiende: $archivo"
       fallidos+=("$archivo"); rm -f "$temporal"; continue
     fi
     entrada="$temporal"

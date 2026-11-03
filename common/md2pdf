@@ -61,7 +61,11 @@
 #   si tiene carpeta); en las carpetas de -i, si pasaste alguna (también por
 #   nombre en sus subcarpetas); y después por nombre en todo el vault (la
 #   carpeta que tiene .obsidian/). Si no hay vault, en todo el repositorio git
-#   del .md; y si tampoco hay, en la carpeta del .md y sus subcarpetas.
+#   del .md; y si tampoco hay, en la carpeta del .md, sus subcarpetas y las
+#   carpetas hermanas (las que están al lado, dentro de la misma carpeta) con
+#   sus subcarpetas, salvo que la carpeta de arriba sea tu carpeta personal o /
+#   (para no recorrer todo el disco). Si hay varias con el mismo nombre, usa
+#   la más cercana a la nota.
 #   Lo mismo vale para las imágenes de Markdown estándar, ![texto](foto.png),
 #   que es lo que Obsidian escribe si desactivás los wikilinks (con %20 en vez
 #   de espacios): si el archivo no está donde dice la ruta, se busca por nombre
@@ -201,7 +205,11 @@ fi
 # Solo se usa con los .md que tienen [[ ]] (ver "NOTAS DE OBSIDIAN" arriba).
 
 # Carpeta donde buscar imágenes por nombre: el vault de Obsidian (la carpeta
-# que contiene .obsidian/), si no el repositorio git, si no la carpeta del .md.
+# que contiene .obsidian/), si no el repositorio git. Si no hay ninguno, la
+# carpeta de arriba del .md: así entran la carpeta del .md, sus subcarpetas y
+# las carpetas "hermanas" (por ejemplo notas/ y fotos/ dentro de la misma
+# carpeta). Pero si la carpeta de arriba es tu carpeta personal o la raíz (/),
+# se busca solo en la del .md, para no recorrer todo el disco.
 carpeta_de_busqueda() {
   local carpeta=${1:A} d=${1:A} raiz
   while [[ $d != / ]]; do
@@ -210,8 +218,10 @@ carpeta_de_busqueda() {
   done
   if raiz=$(git -C "$carpeta" rev-parse --show-toplevel 2>/dev/null); then
     print -r -- $raiz
-  else
+  elif [[ ${carpeta:h} == (/|${HOME:A}) ]]; then
     print -r -- $carpeta
+  else
+    print -r -- ${carpeta:h}
   fi
 }
 
@@ -219,7 +229,7 @@ carpeta_de_busqueda() {
 # Variables que recibe: CARPETA_MD (carpeta del .md) y BASE (dónde buscar).
 read -r -d '' TRADUCIR_OBSIDIAN <<'PERL'
 use strict; use warnings; use utf8;
-use File::Find; use File::Basename qw(basename);
+use File::Find; use File::Basename qw(basename); use File::Spec;
 use Encode qw(encode decode);
 # Las rutas se manejan como texto (decodificado) y se codifican en UTF-8 solo
 # al preguntarle algo al sistema de archivos, para que anden acentos y eñes.
@@ -255,7 +265,10 @@ sub buscar {
     my @c = @{ indice_de($dir)->{basename($ruta)} || [] };
     my @exactos = grep { substr($_, -length($fin)) eq $fin } @c;
     @c = @exactos if @exactos;
-    return (sort { length($a) <=> length($b) || $a cmp $b } @c)[0] if @c;  # la más cercana
+    # Si hay varias con el mismo nombre, la más cercana a la nota: la que está
+    # a menos carpetas de distancia (contando las subidas con ..).
+    my %dist = map { my $r = File::Spec->abs2rel($_, $carpeta); ($_ => scalar(split m{/}, $r)) } @c;
+    return (sort { $dist{$a} <=> $dist{$b} || $a cmp $b } @c)[0] if @c;
   }
   return undef;
 }

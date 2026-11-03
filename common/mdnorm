@@ -43,13 +43,20 @@
 #        ![[foto.png|derecha]]     ->  ![](assets/foto.png){.derecha}
 #      ("izquierda" también vale, y se combina con el ancho: |derecha|300.)
 #      La imagen se busca como en md2pdf: en la carpeta del .md, y si no, por
-#      nombre en todo el vault (la carpeta con .obsidian/), o en el
-#      repositorio git, o en la carpeta del .md y sus subcarpetas. La ruta
+#      nombre en todo el vault (la carpeta con .obsidian/), o en todo el
+#      repositorio git. Si no hay ninguno de los dos, en la carpeta del .md,
+#      sus subcarpetas y las carpetas hermanas (las que están al lado, dentro
+#      de la misma carpeta) con sus subcarpetas; salvo que la carpeta de arriba
+#      sea tu carpeta personal o /, para no recorrer todo el disco. Las
+#      carpetas ocultas (.algo) no se miran. Si hay varias con el mismo
+#      nombre, usa la más cercana a la nota. La ruta
 #      queda relativa a la nota, con %20 en lugar de los espacios (como la
 #      escribe Obsidian). OJO: Obsidian no entiende {width=...} y lo muestra
 #      como texto al lado de la imagen; en el PDF sale bien.
 #      Si no encuentra la imagen, o si tiene otro texto después del | (por
 #      ejemplo un texto alternativo), la deja como está y avisa.
+#      Las imágenes de Markdown estándar, ![texto](foto.png), no se cambian,
+#      pero también se comprueba que existan y se avisa si falta alguna.
 #      Los enlaces a notas ([[Nota]]) no se tocan.
 #
 #   5. Cabecera YAML (entre --- al principio del archivo). Arregla los
@@ -87,7 +94,9 @@
 #   mdnorm -y nota.md         (-y o --yes: guarda sin preguntar)
 #
 # CÓDIGO DE SALIDA:
-#   0 si terminó bien, 1 si falló algún archivo o falta una dependencia.
+#   0 si terminó bien; 1 si falló algún archivo, si quedaron imágenes sin
+#   encontrar o si falta una dependencia. Al final se listan los archivos con
+#   imágenes sin encontrar.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - zsh y perl (vienen en Debian/Ubuntu; zsh: sudo apt install zsh)
@@ -143,7 +152,11 @@ fi
 
 # --- Dónde buscar las imágenes por nombre --------------------------------------
 # El vault de Obsidian (la carpeta que contiene .obsidian/), si no el
-# repositorio git, si no la carpeta del .md. (Igual que en md2pdf.)
+# repositorio git. Si no hay ninguno, la carpeta de arriba del .md: así entran
+# la carpeta del .md, sus subcarpetas y las carpetas "hermanas" (por ejemplo
+# notas/ y fotos/ dentro de la misma carpeta), con sus subcarpetas. Pero si la
+# carpeta de arriba es tu carpeta personal o la raíz (/), se busca solo en la
+# del .md, para no recorrer todo el disco. (Igual que en md2pdf.)
 carpeta_de_busqueda() {
   local carpeta=${1:A} d=${1:A} raiz
   while [[ $d != / ]]; do
@@ -152,8 +165,10 @@ carpeta_de_busqueda() {
   done
   if raiz=$(git -C "$carpeta" rev-parse --show-toplevel 2>/dev/null); then
     print -r -- $raiz
-  else
+  elif [[ ${carpeta:h} == (/|${HOME:A}) ]]; then
     print -r -- $carpeta
+  else
+    print -r -- ${carpeta:h}
   fi
 }
 
@@ -170,6 +185,7 @@ sub txt { decode("UTF-8", $_[0]) }
 my $carpeta = txt($ENV{CARPETA_MD});
 my $base    = txt($ENV{BASE});
 my %indice; my $indexado = 0;
+my $faltan = 0;   # imágenes que no se encontraron
 
 # --- Imágenes ---
 sub buscar {
@@ -189,7 +205,10 @@ sub buscar {
   my @exactos = grep { substr($_, -length($fin)) eq $fin } @c;
   @c = @exactos if @exactos;
   return undef unless @c;
-  return (sort { length($a) <=> length($b) || $a cmp $b } @c)[0];
+  # Si hay varias con el mismo nombre, la más cercana a la nota: la que está a
+  # menos carpetas de distancia (contando las subidas con ..).
+  my %dist = map { my $r = File::Spec->abs2rel($_, $carpeta); ($_ => scalar(split m{/}, $r)) } @c;
+  return (sort { $dist{$a} <=> $dist{$b} || $a cmp $b } @c)[0];
 }
 
 sub ruta_md {   # ruta relativa a la nota, apta para Markdown
@@ -219,15 +238,33 @@ sub imagen_obsidian {
   my $ruta = buscar($destino);
   if (!defined $ruta) {
     warn "   ⚠️  No encontré la imagen, la dejé como está: $original\n";
+    $faltan++;
     return $original;
   }
   my $atributos = @attr ? "{" . join(" ", @attr) . "}" : "";
   return "![](" . ruta_md($ruta) . ")$atributos";
 }
 
+# Imagen de Markdown estándar, ![texto](ruta): no se cambia, solo se comprueba
+# que exista (al lado de la nota, o por nombre donde md2pdf la buscaría).
+sub revisar_estandar {
+  my ($original, $dest) = @_;
+  my $d = $dest; $d =~ s/^<(.*)>$/$1/;
+  return $original if $d =~ m{^(?:[a-zA-Z][a-zA-Z0-9+.\-]*:|\#)};   # URL
+  my $dec = $d; $dec =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge; $dec = txt($dec);
+  return $original if -f fs($d) && $d =~ m{^/};                      # absoluta
+  return $original if -f fs("$carpeta/$d") || -f fs("$carpeta/$dec");
+  return $original if $d !~ m{^/} && defined buscar($dec);
+  warn "   ⚠️  No encontré la imagen: $original\n";
+  $faltan++;
+  return $original;
+}
+
 sub imagenes_en_linea {
   my ($l) = @_;
-  $l =~ s{(`+)(.*?)\1|!\[\[([^\[\]\n]+?)\]\]}{ defined $1 ? "$1$2$1" : imagen_obsidian($&, $3) }ge;
+  $l =~ s{(`+)(.*?)\1|!\[\[([^\[\]\n]+?)\]\]|!\[[^\[\]\n]*\]\((<[^>\n]+>|[^)\s]+)(?:\s+"[^"\n]*")?\)}{
+    defined $1 ? "$1$2$1" : defined $3 ? imagen_obsidian($&, $3) : revisar_estandar($&, $4)
+  }ge;
   return $l;
 }
 
@@ -427,6 +464,8 @@ for (my $i = 0; $i < @in; $i++) {
   push @out, imagenes_en_linea($l);
 }
 print "$_\n" for @out;
+# Cuántas imágenes faltan, para el resumen (en el archivo que indica FALTAN).
+if ($ENV{FALTAN}) { open(my $f, ">", $ENV{FALTAN}) or die; print $f $faltan; close $f; }
 PERL
 
 # --- 2. Procesar cada archivo -------------------------------------------------
@@ -440,14 +479,18 @@ mostrar_cambios() {
 }
 
 fallidos=()
+con_faltantes=()
+cuenta="$(mktemp)"
 for archivo in "${archivos[@]}"; do
   temporal="$(mktemp --suffix=.md)"
   echo "── $archivo"
   if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
-       perl -CSD -e "$NORMALIZAR" < "$archivo" > "$temporal"; then
+       FALTAN="$cuenta" perl -CSD -e "$NORMALIZAR" < "$archivo" > "$temporal"; then
     echo "   ❌ Error al normalizar."
     fallidos+=("$archivo"); rm -f "$temporal"; continue
   fi
+  faltan=$(<"$cuenta")
+  (( faltan > 0 )) && con_faltantes+=("$archivo ($faltan)")
   # Si el original no terminaba con salto de línea, se respeta.
   if [[ -s $archivo && "$(tail -c 1 -- "$archivo")" != "" ]]; then
     printf '%s' "$(<"$temporal")" > "$temporal"
@@ -463,8 +506,8 @@ for archivo in "${archivos[@]}"; do
     fi
   fi
   if cmp -s -- "$archivo" "$temporal"; then
-    if [[ -n $error_yaml ]]; then
-      echo "   No hay nada más para cambiar."
+    if [[ -n $error_yaml ]] || (( faltan > 0 )); then
+      echo "   No hay nada más para cambiar, pero revisá lo de arriba."
     else
       echo "   ✔ Ya estaba bien, sin cambios."
     fi
@@ -492,7 +535,12 @@ for archivo in "${archivos[@]}"; do
   rm -f "$temporal"
 done
 
+rm -f "$cuenta"
+
+if (( ${#con_faltantes[@]} > 0 )); then
+  echo "⚠️ Imágenes sin encontrar en: ${(j:, :)con_faltantes}"
+fi
 if (( ${#fallidos[@]} > 0 )); then
   echo "⚠️ Fallaron ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}"
-  exit 1
 fi
+(( ${#fallidos[@]} + ${#con_faltantes[@]} == 0 )) || exit 1

@@ -186,6 +186,7 @@ my $carpeta = txt($ENV{CARPETA_MD});
 my $base    = txt($ENV{BASE});
 my %indice; my $indexado = 0;
 my $faltan = 0;   # imágenes que no se encontraron
+my $avisos = 0;   # otros avisos (clave repetida, imagen con texto después del |)
 
 # --- Imágenes ---
 sub buscar {
@@ -233,6 +234,7 @@ sub imagen_obsidian {
   }
   if (defined $raro) {
     warn "   ⚠️  La dejé como está (tiene el texto \"$raro\" después del |): $original\n";
+    $avisos++;
     return $original;
   }
   my $ruta = buscar($destino);
@@ -326,7 +328,7 @@ chomp @in;
 # --- Cabecera YAML ---
 # Solo se tocan las claves de primer nivel ("clave: valor" sin sangría). Las
 # listas, los valores anidados y los bloques (| o >) quedan como están.
-sub aviso { warn "   ⚠️  $_[0]\n"; }
+sub aviso { warn "   ⚠️  $_[0]\n"; $avisos++; }
 
 sub arreglar_valor {    # devuelve el valor arreglado, o undef si está bien
   my ($v) = @_;
@@ -464,8 +466,9 @@ for (my $i = 0; $i < @in; $i++) {
   push @out, imagenes_en_linea($l);
 }
 print "$_\n" for @out;
-# Cuántas imágenes faltan, para el resumen (en el archivo que indica FALTAN).
-if ($ENV{FALTAN}) { open(my $f, ">", $ENV{FALTAN}) or die; print $f $faltan; close $f; }
+# Cuántas imágenes faltan y cuántos otros avisos hubo, para el resumen (se
+# escriben en el archivo que indica FALTAN).
+if ($ENV{FALTAN}) { open(my $f, ">", $ENV{FALTAN}) or die; print $f "$faltan $avisos\n"; close $f; }
 PERL
 
 # --- 2. Procesar cada archivo -------------------------------------------------
@@ -489,7 +492,7 @@ for archivo in "${archivos[@]}"; do
     echo "   ❌ Error al normalizar."
     fallidos+=("$archivo"); rm -f "$temporal"; continue
   fi
-  faltan=$(<"$cuenta")
+  read faltan avisos < "$cuenta"
   (( faltan > 0 )) && con_faltantes+=("$archivo ($faltan)")
   # Si el original no terminaba con salto de línea, se respeta.
   if [[ -s $archivo && "$(tail -c 1 -- "$archivo")" != "" ]]; then
@@ -506,7 +509,7 @@ for archivo in "${archivos[@]}"; do
     fi
   fi
   if cmp -s -- "$archivo" "$temporal"; then
-    if [[ -n $error_yaml ]] || (( faltan > 0 )); then
+    if [[ -n $error_yaml ]] || (( faltan + avisos > 0 )); then
       echo "   No hay nada más para cambiar, pero revisá lo de arriba."
     else
       echo "   ✔ Ya estaba bien, sin cambios."

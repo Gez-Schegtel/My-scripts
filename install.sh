@@ -24,8 +24,41 @@
 #   ./install.sh               Instala o sincroniza.
 #   ./install.sh --uninstall   Quita todos los enlaces de este repositorio.
 #                              Usalo antes de mover o renombrar la carpeta.
+#   ./install.sh --help        Muestra la ayuda (también -h).
+#
+# Código de salida: 0 si terminó bien, 1 si algo falló, 2 si el uso es
+# incorrecto (opción desconocida o argumentos de más).
 # ==============================================================================
 set -euo pipefail
+
+uso() {
+  cat <<'EOF'
+Uso: ./install.sh [--uninstall | --help]
+
+Crea en /usr/local/bin un enlace a cada script de common/ y de la carpeta de
+tu distribución, y quita los que ya no corresponden. Se puede ejecutar todas
+las veces que quieras.
+
+Opciones:
+  --uninstall   Quita todos los enlaces de este repositorio (usalo antes de
+                mover o renombrar la carpeta).
+  -h, --help    Muestra esta ayuda.
+EOF
+}
+
+if (($# > 1)); then
+  echo "❌ Demasiados argumentos." >&2
+  uso >&2
+  exit 2
+fi
+
+# --help se atiende antes que nada, así funciona siempre.
+case ${1:-} in
+-h | --help)
+  uso
+  exit 0
+  ;;
+esac
 
 BIN=/usr/local/bin
 REPO=$(cd "$(dirname "$(readlink -f "$0")")" && pwd -P)
@@ -101,7 +134,8 @@ case ${1:-} in
   exit 0
   ;;
 *)
-  echo "Uso: ./install.sh [--uninstall]" >&2
+  echo "❌ Opción desconocida: $1" >&2
+  uso >&2
   exit 2
   ;;
 esac

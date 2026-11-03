@@ -1,96 +1,21 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # ==============================================================================
 # SCRIPT: discord-canary-updater
 # DESCRIPCIÓN:
-#   Descarga e instala automáticamente la última versión de Discord Canary (.deb).
-#
-#   [⚡ OPTIMIZACIÓN INCORPORADA]: Inspecciona los servidores de Discord ANTES
-#   de descargar. Si la versión disponible es igual a la instalada, el script
-#   finaliza inmediatamente en milisegundos, ahorrando tiempo y datos de red.
-#
-#   Incluye gestión segura de sudo, prevención de bloqueos de APT (timeout),
-#   y autolimpieza garantizada de archivos temporales mediante 'trap'.
+#   Descarga e instala automáticamente la última versión de Discord Canary
+#   (.deb). Es un atajo a "discord-updater --canary": todo el trabajo lo hace
+#   discord-updater, que está en la misma carpeta (así hay una sola copia del
+#   código y cualquier arreglo vale para las dos versiones).
 #
 # USO:
 #   discord-canary-updater
+#   discord-canary-updater --help   (-h o --help: muestra la ayuda)
 #
-# DEPENDENCIAS REQUERIDAS:
-#   - wget, grep, dpkg, apt (Herramientas estándar preinstaladas en Ubuntu/Debian).
+# CÓDIGO DE SALIDA y DEPENDENCIAS: los de discord-updater.
 # ==============================================================================
 
-# Nombre del paquete
-PACKAGE="discord-canary"
-
-# URL de descarga
-DOWNLOAD_URL="https://discord.com/api/download/canary?platform=linux&format=deb"
-
-# 1. Carpeta temporal propia (nombre impredecible, solo para este proceso) y
-#    autolimpieza (se ejecuta automáticamente al salir o cancelar).
-#    Permisos 755 para que APT pueda leer el paquete con su usuario "_apt".
-TMP_DIR=$(mktemp -d) || exit 1
-chmod 755 "$TMP_DIR"
-DEB_FILE="$TMP_DIR/discord-canary.deb"
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-# 2. Verificar si wget está instalado
-if ! command -v wget &>/dev/null; then
-	echo "❌ Error: wget no está instalado. Instálalo con:"
-	echo "   sudo apt install wget"
-	exit 1
-fi
-
-# 3. Obtener la versión instalada (si existe). Solo cuenta si el paquete está
-#    realmente instalado: si se desinstaló sin purgar ("apt remove"), dpkg
-#    todavía recuerda su versión aunque el programa ya no esté.
-INSTALLED_VERSION=""
-if [[ $(dpkg-query -W -f='${db:Status-Status}' "$PACKAGE" 2>/dev/null) == installed ]]; then
-	INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' "$PACKAGE")
-fi
-
-# 4. Inspeccionar el servidor para obtener la nueva versión (SIN descargar el archivo)
-echo "🔍 Consultando el servidor de Discord..."
-# Usamos --spider para leer solo los encabezados de red sin descargar el archivo real
-NEW_VERSION=$(wget --spider --server-response "$DOWNLOAD_URL" 2>&1 | grep -i 'Location:' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -n 1)
-
-if [[ -z "$NEW_VERSION" ]]; then
-	echo "❌ Error: No se pudo obtener la información de la versión desde el servidor."
-	exit 1
-fi
-
-# 5. Comparar versiones ANTES de descargar
-if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$NEW_VERSION" ]]; then
-	echo "✅ Discord Canary ya está en su última versión ($INSTALLED_VERSION)."
-	echo "🚫 Operación cancelada: No es necesario descargar ningún archivo."
-	exit 0
-fi
-
-# Mostrar "ninguna" si el programa no estaba instalado previamente
-echo "📦 Se encontró una nueva versión: $NEW_VERSION (actual: ${INSTALLED_VERSION:-ninguna})."
-
-# 6. Descargar el archivo .deb
-echo "🔄 Descargando el paquete de Discord Canary v$NEW_VERSION..."
-if ! wget -q --show-progress -O "$DEB_FILE" "$DOWNLOAD_URL"; then
-	echo "❌ Error: Falló la conexión o la descarga del paquete."
-	exit 1
-fi
-
-# Que APT pueda leer el paquete aunque tu umask cree archivos privados
-chmod 644 "$DEB_FILE"
-
-# 7. Refrescar/Pedir los permisos de sudo antes de empezar la instalación
-echo "🔐 Solicitando permisos para instalar..."
-if ! sudo -v; then
-	echo "❌ Actualización cancelada por el usuario."
-	exit 1
-fi
-
-# 8. Instalar el paquete usando apt
-echo "⚙️ Procediendo con la actualización..."
-if sudo apt-get -o DPkg::Lock::Timeout=120 install -y "$DEB_FILE"; then
-	echo "✅ ¡Proceso completado! Discord Canary ha sido actualizado a la versión $NEW_VERSION."
-else
-	echo "❌ Error: La instalación falló debido a un error de dependencias o bloqueo persistente."
-	exit 1
-fi
+# Se ejecuta discord-updater desde la carpeta real de este script, aunque se
+# lo llame a través del enlace de /usr/local/bin.
+exec "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/discord-updater" --canary "$@"

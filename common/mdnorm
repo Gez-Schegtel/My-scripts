@@ -142,14 +142,21 @@
 #                              línea por línea antes de preguntar; si no te
 #                              convencen, respondés que no y queda como estaba)
 #   mdnorm -y nota.md         (-y o --yes: guarda sin preguntar)
+#   mdnorm -- -raro.md        (-- indica que lo que sigue son archivos, aunque
+#                              empiecen con "-")
+#   mdnorm --help             (-h o --help: muestra la ayuda)
 #
 # CÓDIGO DE SALIDA:
-#   0 si terminó bien; 1 si falló algún archivo, si quedaron imágenes sin
-#   encontrar o si falta una dependencia. Al final se listan los archivos con
-#   imágenes sin encontrar.
+#   0  Terminó bien (aunque hayas decidido no guardar algún archivo).
+#   1  Falló algún archivo, alguno no existe o no es Markdown, quedaron
+#      imágenes sin encontrar, o falta una dependencia. Al final se listan
+#      los archivos con imágenes sin encontrar.
+#   2  Uso incorrecto (opción desconocida).
+#   Los errores y avisos salen por la salida de errores (stderr).
 #
 # DEPENDENCIAS REQUERIDAS:
-#   - zsh y perl (vienen en Debian/Ubuntu; zsh: sudo apt install zsh)
+#   - zsh y perl (el paquete "perl" completo, no solo "perl-base": usa
+#     módulos que vienen en él; zsh: sudo apt install zsh)
 #   - diff (paquete diffutils, viene instalado) para mostrar los cambios.
 #   - git es opcional: si está, se usa para encontrar la raíz del repositorio
 #     y para mostrar los cambios con colores.
@@ -158,32 +165,66 @@
 # extended_glob: permite el patrón *.(#i)(md|markdown)(N.) de más abajo.
 setopt extended_glob
 
-# --- Comprobaciones previas ---------------------------------------------------
-for programa in perl diff; do
-  if (( ! $+commands[$programa] )); then
-    echo "❌ Error: falta '$programa'."
-    exit 1
-  fi
-done
-
 # --- Opciones -----------------------------------------------------------------
-# zparseopts saca las opciones de los argumentos (-E: en cualquier posición);
-# -F falla con una opción que no existe. Un "--" suelto se descarta.
+# Se leen antes de comprobar las dependencias, así --help funciona aunque
+# falte algo. zparseopts saca las opciones de los argumentos (-E: en
+# cualquier posición); -F falla con una opción que no existe. Un "--" suelto
+# se descarta.
 uso="Uso: mdnorm [-y] [-v] [archivo.md ...]"
-zparseopts -D -E -F -- y=opcion_y -yes=opcion_y v=opcion_v -verbose=opcion_v 2>/dev/null || {
-  echo "❌ Opción no válida. $uso"
-  exit 1
+ayuda() {
+  cat <<'EOF'
+Uso: mdnorm [-y] [-v] [archivo.md ...]
+
+Normaliza archivos Markdown (de Obsidian, Notion, GitHub, un chat de IA...)
+para que pandoc los convierta bien a PDF, con cambios mínimos. Sin archivos,
+normaliza todos los .md de la carpeta actual.
+
+Muestra los avisos y un resumen de los cambios, y pregunta antes de guardar
+(si respondés que no, el archivo queda como estaba).
+
+Opciones:
+  -v, --verbose   Muestra además los cambios línea por línea.
+  -y, --yes       Guarda sin preguntar.
+  -h, --help      Muestra esta ayuda.
+
+La lista completa de lo que corrige está en el encabezado del script.
+EOF
+}
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y v=opcion_v -verbose=opcion_v \
+    h=opcion_h -help=opcion_h 2>/dev/null || {
+  echo "❌ Opción no válida. $uso" >&2
+  echo "Usá 'mdnorm --help' para ver la ayuda." >&2
+  exit 2
 }
 [[ $1 == -- ]] && shift
+if (( $#opcion_h )); then
+  ayuda
+  exit 0
+fi
+
+# --- Comprobaciones previas ---------------------------------------------------
+# Perl y sus módulos vienen en el paquete "perl" de Debian/Ubuntu ("perl-base"
+# no alcanza); diff, en diffutils, que siempre está instalado.
+if (( ! $+commands[diff] )); then
+  echo "❌ Error: falta 'diff'. Instalalo con: sudo apt install diffutils" >&2
+  exit 1
+fi
+if ! perl -MFile::Find -MEncode -MUnicode::Normalize -e 1 2>/dev/null; then
+  echo "❌ Error: falta perl (o sus módulos). Instalalo con: sudo apt install perl" >&2
+  exit 1
+fi
 
 # --- 1. Lista de archivos -----------------------------------------------------
 archivos=()
+invalidos=()   # argumentos que no existen o no son Markdown (cuentan como error)
 if (( $# > 0 )); then
   for archivo in "$@"; do
     if [[ ! -f "$archivo" ]]; then
-      echo "⚠️ Saltando '$archivo': no existe."
+      echo "⚠️ Saltando '$archivo': no existe." >&2
+      invalidos+=("$archivo")
     elif [[ "${(L)archivo:e}" != (md|markdown) ]]; then
-      echo "⚠️ Saltando '$archivo': no es un archivo Markdown (.md)."
+      echo "⚠️ Saltando '$archivo': no es un archivo Markdown (.md)." >&2
+      invalidos+=("$archivo")
     else
       archivos+=("$archivo")
     fi
@@ -193,7 +234,8 @@ else
 fi
 if (( ${#archivos[@]} == 0 )); then
   echo "No se encontraron archivos Markdown para normalizar."
-  exit 0
+  (( ${#invalidos[@]} == 0 ))   # 0 si no había nada; 1 si los indicados no servían
+  exit
 fi
 
 # --- Dónde buscar las imágenes por nombre --------------------------------------
@@ -806,7 +848,7 @@ for archivo in "${archivos[@]}"; do
   echo "── $archivo"
   if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
        FALTAN="$cuenta" NOMBRE_MD="${archivo:t}" perl -CSD -e "$NORMALIZAR" < "$archivo" > "$temporal"; then
-    echo "   ❌ Error al normalizar."
+    echo "   ❌ Error al normalizar." >&2
     fallidos+=("$archivo"); rm -f "$temporal"; continue
   fi
   read faltan avisos < "$cuenta"
@@ -822,9 +864,11 @@ for archivo in "${archivos[@]}"; do
   if (( $+commands[pandoc] )) && [[ ${primera#$'\xef\xbb\xbf'} == ---* ]]; then
     error_yaml=$(pandoc -f markdown -t plain -o /dev/null -- "$temporal" 2>&1 | grep -i -A3 'yaml')
     if [[ -n $error_yaml ]]; then
-      echo "   ❌ La cabecera YAML sigue con un error que no pude arreglar solo"
-      echo "      (pandoc cuenta las líneas desde la que sigue al primer ---):"
-      print -r -- "$error_yaml" | sed 's/^/      /'
+      {
+        echo "   ❌ La cabecera YAML sigue con un error que no pude arreglar solo"
+        echo "      (pandoc cuenta las líneas desde la que sigue al primer ---):"
+        print -r -- "$error_yaml" | sed 's/^/      /'
+      } >&2
     fi
   fi
   if cmp -s -- "$archivo" "$temporal"; then
@@ -854,7 +898,7 @@ for archivo in "${archivos[@]}"; do
   if cat -- "$temporal" > "$archivo"; then
     echo "   ✔ Guardado."
   else
-    echo "   ❌ No se pudo guardar."
+    echo "   ❌ No se pudo guardar." >&2
     fallidos+=("$archivo")
   fi
   rm -f "$temporal"
@@ -863,9 +907,12 @@ done
 rm -f "$cuenta"
 
 if (( ${#con_faltantes[@]} > 0 )); then
-  echo "⚠️ Imágenes sin encontrar en: ${(j:, :)con_faltantes}"
+  echo "⚠️ Imágenes sin encontrar en: ${(j:, :)con_faltantes}" >&2
 fi
 if (( ${#fallidos[@]} > 0 )); then
-  echo "⚠️ Fallaron ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}"
+  echo "⚠️ Fallaron ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}" >&2
 fi
-(( ${#fallidos[@]} + ${#con_faltantes[@]} == 0 )) || exit 1
+if (( ${#invalidos[@]} > 0 )); then
+  echo "⚠️ Se saltearon ${#invalidos[@]} argumento(s) que no existen o no son Markdown: ${(j:, :)invalidos}" >&2
+fi
+(( ${#fallidos[@]} + ${#con_faltantes[@]} + ${#invalidos[@]} == 0 )) || exit 1

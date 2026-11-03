@@ -393,10 +393,11 @@ if ((! ASSUME_YES)) && [[ ! -t 0 ]]; then
 	exit 2
 fi
 
-# Impedir dos ejecuciones simultáneas
-LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/ubuntu-updater.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
+# Impedir dos ejecuciones simultáneas: se bloquea el propio script, abierto
+# solo para lectura. Así no hace falta un archivo de bloqueo en /tmp (sin
+# sesión, como en una tarea programada, no hay XDG_RUNTIME_DIR), que otro
+# usuario podría crear antes para impedir que el script arranque.
+if ! exec 9<"${BASH_SOURCE[0]}" || ! flock -n 9; then
 	error "❌ ubuntu-updater ya se está ejecutando en otra terminal."
 	exit 1
 fi

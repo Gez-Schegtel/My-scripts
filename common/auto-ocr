@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # ==============================================================================
@@ -21,39 +21,100 @@
 # USO:
 #   auto-ocr archivo.pdf
 #   auto-ocr archivo1.pdf archivo2.pdf
-#   auto-ocr *.pdf (para procesar todos los PDFs de una carpeta)
+#   auto-ocr *.pdf            (para procesar todos los PDFs de una carpeta)
+#   auto-ocr -- -raro.pdf     (-- indica que lo que sigue son archivos, aunque
+#                              empiecen con "-")
+#   auto-ocr --help           (-h o --help: muestra la ayuda)
 #
 # CÓDIGO DE SALIDA:
-#   0 si no hubo errores (aunque se haya salteado algún archivo), 1 si alguno
-#   falló o no se indicó ningún archivo.
+#   0  No hubo errores (aunque se haya salteado algún archivo ya procesado).
+#   1  Algún archivo falló, no existe o no es un PDF, o falta una dependencia.
+#   2  Uso incorrecto: no se indicó ningún archivo, u opción desconocida.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - ocrmypdf
 #   - tesseract-ocr-spa (para el reconocimiento en español)
 #   - unpaper (necesario para el parámetro --clean)
+#   Se comprueban al empezar, antes de procesar ningún archivo.
 #
 # Instalación de dependencias en Debian/Ubuntu:
 #   sudo apt install ocrmypdf tesseract-ocr-spa unpaper
 # ==============================================================================
 
-# Verificar si se pasó al menos un archivo como argumento
-if [ "$#" -eq 0 ]; then
-	echo "❌ Error: No indicaste ningún archivo."
-	echo "Uso: auto-ocr archivo1.pdf [archivo2.pdf ...]"
-	echo "Tip: Podés usar comodines, por ejemplo: auto-ocr *.pdf"
+INSTALAR="sudo apt install ocrmypdf tesseract-ocr-spa unpaper"
+
+uso() {
+	cat <<'EOF'
+Uso: auto-ocr [-h] archivo.pdf [archivo.pdf ...]
+
+Aplica OCR en español a PDFs escaneados y guarda el resultado al lado de
+cada uno como archivo_ocr.pdf, sin tocar el original. Saltea los que ya
+tienen su _ocr.pdf.
+
+Opciones:
+  -h, --help   Muestra esta ayuda.
+  --           Lo que sigue son archivos, aunque empiecen con "-".
+
+Ejemplo: auto-ocr *.pdf
+EOF
+}
+
+# --- Opciones y archivos ------------------------------------------------------
+archivos=()
+while (($# > 0)); do
+	case $1 in
+	-h | --help)
+		uso
+		exit 0
+		;;
+	--)
+		shift
+		archivos+=("$@")
+		break
+		;;
+	-?*)
+		echo "❌ Opción desconocida: $1" >&2
+		echo "Usá 'auto-ocr --help' para ver la ayuda." >&2
+		exit 2
+		;;
+	*) archivos+=("$1") ;;
+	esac
+	shift
+done
+
+if ((${#archivos[@]} == 0)); then
+	echo "❌ No indicaste ningún archivo." >&2
+	echo "Uso: auto-ocr archivo1.pdf [archivo2.pdf ...]   (por ejemplo: auto-ocr *.pdf)" >&2
+	exit 2
+fi
+
+# --- Dependencias -------------------------------------------------------------
+# Se comprueban antes de empezar, para fallar una sola vez con un mensaje claro
+# (si no, cada archivo fallaría por separado con el mismo error).
+for programa in ocrmypdf unpaper; do
+	if ! command -v "$programa" >/dev/null; then
+		echo "❌ Falta '$programa'. Instalá las dependencias con:" >&2
+		echo "   $INSTALAR" >&2
+		exit 1
+	fi
+done
+if command -v tesseract >/dev/null && ! tesseract --list-langs 2>/dev/null | grep -qx spa; then
+	echo "❌ Falta el idioma español de tesseract. Instalalo con:" >&2
+	echo "   sudo apt install tesseract-ocr-spa" >&2
 	exit 1
 fi
 
+# --- Procesamiento ------------------------------------------------------------
 procesados=0
 fallidos=0
+invalidos=0
 salteados=0
 
-# Bucle para procesar cada archivo que le pases al script
-for archivo in "$@"; do
+for archivo in "${archivos[@]}"; do
 	# Verificar que el archivo realmente existe y termina en .pdf (o .PDF)
-	if [ ! -f "$archivo" ] || [[ "${archivo,,}" != *.pdf ]]; then
-		echo "⚠️ Saltando '$archivo': No existe o no es un archivo PDF."
-		salteados=$((salteados + 1))
+	if [[ ! -f $archivo || ${archivo,,} != *.pdf ]]; then
+		echo "⚠️ Saltando '$archivo': no existe o no es un archivo PDF." >&2
+		invalidos=$((invalidos + 1))
 		continue
 	fi
 
@@ -61,7 +122,7 @@ for archivo in "$@"; do
 	base="${archivo%.*}"
 
 	# No volver a procesar un resultado de auto-ocr (evita libro_ocr_ocr.pdf)
-	if [[ "${base,,}" == *_ocr ]]; then
+	if [[ ${base,,} == *_ocr ]]; then
 		echo "⏭️ Saltando '$archivo': ya es un resultado de auto-ocr."
 		salteados=$((salteados + 1))
 		continue
@@ -71,7 +132,7 @@ for archivo in "$@"; do
 	nombre_salida="${base}_ocr.pdf"
 
 	# No pisar un resultado anterior
-	if [ -e "$nombre_salida" ]; then
+	if [[ -e $nombre_salida ]]; then
 		echo "⏭️ Saltando '$archivo': ya existe '$nombre_salida' (borralo si querés procesarlo de nuevo)."
 		salteados=$((salteados + 1))
 		continue
@@ -87,7 +148,7 @@ for archivo in "$@"; do
 		echo "✅ ¡Éxito! Archivo guardado: $nombre_salida"
 		procesados=$((procesados + 1))
 	else
-		echo "❌ Error al intentar procesar: $archivo"
+		echo "❌ Error al intentar procesar: $archivo" >&2
 		fallidos=$((fallidos + 1))
 	fi
 	echo ""
@@ -98,12 +159,15 @@ resumen="$procesados procesado(s)"
 if ((fallidos > 0)); then
 	resumen+=", $fallidos con error"
 fi
+if ((invalidos > 0)); then
+	resumen+=", $invalidos inexistente(s) o no PDF"
+fi
 if ((salteados > 0)); then
 	resumen+=", $salteados salteado(s)"
 fi
 
-if ((fallidos > 0)); then
-	echo "⚠️ Terminado con errores: $resumen."
+if ((fallidos + invalidos > 0)); then
+	echo "⚠️ Terminado con errores: $resumen." >&2
 	exit 1
 fi
 echo "🎉 Listo: $resumen."

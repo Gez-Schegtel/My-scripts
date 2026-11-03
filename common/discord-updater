@@ -1,10 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # ==============================================================================
 # SCRIPT: discord-updater
 # DESCRIPCIÓN:
-#   Descarga e instala automáticamente la última versión de Discord (Estable) (.deb).
+#   Descarga e instala automáticamente la última versión de Discord (.deb):
+#   la estable o, con --canary, la Canary (la de pruebas).
 #
 #   [⚡ OPTIMIZACIÓN INCORPORADA]: Inspecciona los servidores de Discord ANTES
 #   de descargar. Si la versión disponible es igual a la instalada, el script
@@ -13,35 +14,90 @@
 #   Incluye gestión segura de sudo, prevención de bloqueos de APT (timeout),
 #   y autolimpieza garantizada de archivos temporales mediante 'trap'.
 #
+#   Discord se distribuye como .deb, así que funciona en Debian, Ubuntu y sus
+#   derivadas (necesita APT y dpkg; si no están, lo avisa y no hace nada).
+#
 # USO:
-#   discord-updater
+#   discord-updater             Actualiza Discord (versión estable).
+#   discord-updater --canary    Actualiza Discord Canary (es lo mismo que el
+#                               comando discord-canary-updater).
+#   discord-updater --help      (-h o --help: muestra la ayuda)
+#
+# CÓDIGO DE SALIDA:
+#   0  Discord quedó actualizado (o ya lo estaba).
+#   1  Falló algo (red, descarga, instalación, permisos o dependencias).
+#   2  Uso incorrecto (opción desconocida).
 #
 # DEPENDENCIAS REQUERIDAS:
-#   - wget, grep, dpkg, apt (Herramientas estándar preinstaladas en Ubuntu/Debian).
+#   - wget, dpkg, apt-get y sudo (vienen con Debian/Ubuntu; wget a veces no:
+#     sudo apt install wget).
 # ==============================================================================
 
-# Nombre del paquete
-PACKAGE="discord"
+uso() {
+	cat <<'EOF'
+Uso: discord-updater [--canary] [-h]
 
-# URL de descarga
-DOWNLOAD_URL="https://discord.com/api/download?platform=linux&format=deb"
+Descarga e instala la última versión de Discord (.deb), solo si hay una más
+nueva que la instalada. Necesita APT (Debian, Ubuntu y derivadas).
+
+Opciones:
+  --canary     Actualiza Discord Canary en vez de la versión estable
+               (es lo mismo que el comando discord-canary-updater).
+  -h, --help   Muestra esta ayuda.
+EOF
+}
+
+# --- Opciones -----------------------------------------------------------------
+CANAL=estable
+while (($# > 0)); do
+	case $1 in
+	--canary) CANAL=canary ;;
+	-h | --help)
+		uso
+		exit 0
+		;;
+	*)
+		echo "❌ Opción desconocida: $1" >&2
+		echo "Usá 'discord-updater --help' para ver la ayuda." >&2
+		exit 2
+		;;
+	esac
+	shift
+done
+
+if [[ $CANAL == canary ]]; then
+	PACKAGE="discord-canary"
+	NOMBRE="Discord Canary"
+	DOWNLOAD_URL="https://discord.com/api/download/canary?platform=linux&format=deb"
+else
+	PACKAGE="discord"
+	NOMBRE="Discord"
+	DOWNLOAD_URL="https://discord.com/api/download?platform=linux&format=deb"
+fi
+
+# --- Dependencias -------------------------------------------------------------
+for programa in apt-get dpkg-query sudo; do
+	if ! command -v "$programa" >/dev/null; then
+		echo "❌ Error: falta '$programa'. Este script instala el paquete .deb de Discord," >&2
+		echo "   así que solo funciona en Debian, Ubuntu y sus derivadas." >&2
+		exit 1
+	fi
+done
+if ! command -v wget >/dev/null; then
+	echo "❌ Error: wget no está instalado. Instalalo con:" >&2
+	echo "   sudo apt install wget" >&2
+	exit 1
+fi
 
 # 1. Carpeta temporal propia (nombre impredecible, solo para este proceso) y
 #    autolimpieza (se ejecuta automáticamente al salir o cancelar).
 #    Permisos 755 para que APT pueda leer el paquete con su usuario "_apt".
 TMP_DIR=$(mktemp -d) || exit 1
-chmod 755 "$TMP_DIR"
-DEB_FILE="$TMP_DIR/discord.deb"
 trap 'rm -rf "$TMP_DIR"' EXIT
+chmod 755 "$TMP_DIR"
+DEB_FILE="$TMP_DIR/$PACKAGE.deb"
 
-# 2. Verificar si wget está instalado
-if ! command -v wget &>/dev/null; then
-	echo "❌ Error: wget no está instalado. Instálalo con:"
-	echo "   sudo apt install wget"
-	exit 1
-fi
-
-# 3. Obtener la versión instalada (si existe). Solo cuenta si el paquete está
+# 2. Obtener la versión instalada (si existe). Solo cuenta si el paquete está
 #    realmente instalado: si se desinstaló sin purgar ("apt remove"), dpkg
 #    todavía recuerda su versión aunque el programa ya no esté.
 INSTALLED_VERSION=""
@@ -49,19 +105,19 @@ if [[ $(dpkg-query -W -f='${db:Status-Status}' "$PACKAGE" 2>/dev/null) == instal
 	INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' "$PACKAGE")
 fi
 
-# 4. Inspeccionar el servidor para obtener la nueva versión (SIN descargar el archivo)
-echo "🔍 Consultando el servidor de Discord..."
+# 3. Inspeccionar el servidor para obtener la nueva versión (SIN descargar el archivo)
+echo "🔍 Consultando el servidor de $NOMBRE..."
 # Usamos --spider para leer solo los encabezados de red sin descargar el archivo real
 NEW_VERSION=$(wget --spider --server-response "$DOWNLOAD_URL" 2>&1 | grep -i 'Location:' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -n 1)
 
-if [[ -z "$NEW_VERSION" ]]; then
-	echo "❌ Error: No se pudo obtener la información de la versión desde el servidor."
+if [[ -z $NEW_VERSION ]]; then
+	echo "❌ Error: No se pudo obtener la información de la versión desde el servidor." >&2
 	exit 1
 fi
 
-# 5. Comparar versiones ANTES de descargar
-if [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" == "$NEW_VERSION" ]]; then
-	echo "✅ Discord ya está en su última versión ($INSTALLED_VERSION)."
+# 4. Comparar versiones ANTES de descargar
+if [[ -n $INSTALLED_VERSION && $INSTALLED_VERSION == "$NEW_VERSION" ]]; then
+	echo "✅ $NOMBRE ya está en su última versión ($INSTALLED_VERSION)."
 	echo "🚫 Operación cancelada: No es necesario descargar ningún archivo."
 	exit 0
 fi
@@ -69,28 +125,28 @@ fi
 # Mostrar "ninguna" si el programa no estaba instalado previamente
 echo "📦 Se encontró una nueva versión: $NEW_VERSION (actual: ${INSTALLED_VERSION:-ninguna})."
 
-# 6. Descargar el archivo .deb
-echo "🔄 Descargando el paquete de Discord v$NEW_VERSION..."
+# 5. Descargar el archivo .deb
+echo "🔄 Descargando el paquete de $NOMBRE v$NEW_VERSION..."
 if ! wget -q --show-progress -O "$DEB_FILE" "$DOWNLOAD_URL"; then
-	echo "❌ Error: Falló la conexión o la descarga del paquete."
+	echo "❌ Error: Falló la conexión o la descarga del paquete." >&2
 	exit 1
 fi
 
 # Que APT pueda leer el paquete aunque tu umask cree archivos privados
 chmod 644 "$DEB_FILE"
 
-# 7. Refrescar/Pedir los permisos de sudo antes de empezar la instalación
+# 6. Refrescar/Pedir los permisos de sudo antes de empezar la instalación
 echo "🔐 Solicitando permisos para instalar..."
 if ! sudo -v; then
-	echo "❌ Actualización cancelada por el usuario."
+	echo "❌ No se pudieron obtener permisos de administrador: no se instaló nada." >&2
 	exit 1
 fi
 
-# 8. Instalar el paquete usando apt
+# 7. Instalar el paquete usando apt
 echo "⚙️ Procediendo con la actualización..."
 if sudo apt-get -o DPkg::Lock::Timeout=120 install -y "$DEB_FILE"; then
-	echo "✅ ¡Proceso completado! Discord ha sido actualizado a la versión $NEW_VERSION."
+	echo "✅ ¡Proceso completado! $NOMBRE quedó en la versión $NEW_VERSION."
 else
-	echo "❌ Error: La instalación falló debido a un error de dependencias o bloqueo persistente."
+	echo "❌ Error: La instalación falló debido a un error de dependencias o bloqueo persistente." >&2
 	exit 1
 fi

@@ -45,6 +45,9 @@
 #                              repetir: -i una -i otra. Sirve cuando las
 #                              imágenes no están al lado del .md ni dentro del
 #                              vault o repositorio de la nota)
+#   md2pdf -- -raro.md        (-- indica que lo que sigue son archivos, aunque
+#                              empiecen con "-")
+#   md2pdf --help             (-h o --help: muestra la ayuda)
 #
 # SINTAXIS QUE PANDOC NO ENTIENDE (Obsidian, GitHub, Notion...):
 #   Si un .md tiene enlaces [[...]], imágenes o avisos > [!NOTE], antes de
@@ -81,8 +84,11 @@
 #   Los .md sin [[ ]], imágenes ni avisos pasan directo a pandoc, sin traducción.
 #
 # CÓDIGO DE SALIDA:
-#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló o si
-#   falta alguna dependencia o la configuración de estilo.
+#   0  Todo se convirtió (o cancelaste, o no había nada para convertir).
+#   1  Algún archivo falló, no existe o no es Markdown, o falta una
+#      dependencia o la configuración de estilo.
+#   2  Uso incorrecto (opción desconocida o incompleta).
+#   Los errores y avisos salen por la salida de errores (stderr).
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - zsh (El script está escrito específicamente para Z shell)
@@ -90,8 +96,8 @@
 #     estilo (la lista completa está en el README del repositorio Pandoc config)
 #   - El repositorio Pandoc config instalado en la carpeta de datos de pandoc
 #     (para comprobarlo: pandoc --version | grep -i "user data")
-#   - perl, para traducir la sintaxis que pandoc no entiende (viene instalado
-#     en Debian/Ubuntu).
+#   - perl, para traducir la sintaxis que pandoc no entiende (el paquete
+#     "perl" completo, no solo "perl-base": usa módulos que vienen en él).
 #     git es opcional: si está, se usa para encontrar la raíz del repositorio.
 #
 # Instalación de dependencias en Debian/Ubuntu:
@@ -101,37 +107,9 @@
 # extended_glob: permite el patrón *.(#i)(md|markdown)(N.) de más abajo.
 setopt extended_glob
 
-# --- Comprobaciones previas ---------------------------------------------------
-# Se hacen antes de pedir nada, para fallar una sola vez y con un mensaje claro
-# (si no, cada archivo fallaría por separado con el mismo error).
-
-if (( ! $+commands[pandoc] )); then
-  echo "❌ Error: pandoc no está instalado. Instalalo con:"
-  echo "   sudo apt install pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji"
-  exit 1
-fi
-
-if (( ! $+commands[lualatex] )); then
-  echo "❌ Error: lualatex no está instalado (lo usa el estilo de los PDF). Instalalo con:"
-  echo "   sudo apt install texlive-luatex"
-  exit 1
-fi
-
-# Se comprueba que "-d estilo" se pueda cargar: convierte un texto vacío a texto
-# plano (no genera ningún PDF). Falla si pandoc no encuentra defaults/estilo.yaml
-# en su carpeta de datos o si ese archivo apunta a otro que no existe.
-if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
-  echo "❌ Error: pandoc no pudo cargar la configuración de estilo (-d estilo)."
-  echo "   Tiene que existir defaults/estilo.yaml dentro de la carpeta de datos de"
-  echo "   pandoc. Para ver cuál es esa carpeta:"
-  echo "     pandoc --version | grep -i \"user data\""
-  echo "   Tiene que ser ~/.local/share/pandoc. Si muestra ~/.pandoc, es porque"
-  echo "   ~/.local/share/pandoc no existe (pandoc usa la carpeta vieja solo en"
-  echo "   ese caso)."
-  exit 1
-fi
-
 # --- Opciones -----------------------------------------------------------------
+# Se leen antes de comprobar las dependencias, así --help funciona aunque
+# falte algo.
 # -y / --yes: no pregunta, convierte directo.
 # -i carpeta / --imagenes carpeta: otra carpeta donde buscar las imágenes. Se
 #   puede repetir (-i una -i otra).
@@ -139,12 +117,67 @@ fi
 # -F falla con una opción que no existe. Un "--" suelto se descarta (se acepta
 # por costumbre de otros comandos).
 uso="Uso: md2pdf [-y] [-i carpeta_de_imágenes] [archivo.md ...]"
-zparseopts -D -E -F -- y=opcion_y -yes=opcion_y \
+ayuda() {
+  cat <<'EOF'
+Uso: md2pdf [-y] [-i carpeta_de_imágenes] [archivo.md ...]
+
+Convierte archivos Markdown a PDF con pandoc y tu estilo (pandoc -d estilo).
+Sin archivos, convierte todos los .md de la carpeta actual. Cada PDF se
+guarda al lado de su .md. Entiende la sintaxis de Obsidian (![[imagen]],
+[[enlaces]]) y los avisos > [!NOTE], sin tocar el .md.
+
+Opciones:
+  -y, --yes                 Convierte sin pedir confirmación.
+  -i, --imagenes CARPETA    Otra carpeta donde buscar las imágenes (también
+                            en sus subcarpetas). Se puede repetir.
+  -h, --help                Muestra esta ayuda.
+
+El detalle completo está en el encabezado del script.
+EOF
+}
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y h=opcion_h -help=opcion_h \
     i+:=opcion_i -imagenes+:=opcion_i 2>/dev/null || {
-  echo "❌ Opción no válida o incompleta. $uso"
-  exit 1
+  echo "❌ Opción no válida o incompleta. $uso" >&2
+  echo "Usá 'md2pdf --help' para ver la ayuda." >&2
+  exit 2
 }
 [[ $1 == -- ]] && shift
+if (( $#opcion_h )); then
+  ayuda
+  exit 0
+fi
+
+# --- Comprobaciones previas ---------------------------------------------------
+# Se hacen antes de pedir nada, para fallar una sola vez y con un mensaje claro
+# (si no, cada archivo fallaría por separado con el mismo error).
+
+if (( ! $+commands[pandoc] )); then
+  echo "❌ Error: pandoc no está instalado. Instalalo con:" >&2
+  echo "   sudo apt install pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji" >&2
+  exit 1
+fi
+
+if (( ! $+commands[lualatex] )); then
+  echo "❌ Error: lualatex no está instalado (lo usa el estilo de los PDF). Instalalo con:" >&2
+  echo "   sudo apt install texlive-luatex" >&2
+  exit 1
+fi
+
+# Se comprueba que "-d estilo" se pueda cargar: convierte un texto vacío a texto
+# plano (no genera ningún PDF). Falla si pandoc no encuentra defaults/estilo.yaml
+# en su carpeta de datos o si ese archivo apunta a otro que no existe.
+if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
+  {
+    echo "❌ Error: pandoc no pudo cargar la configuración de estilo (-d estilo)."
+    echo "   Tiene que existir defaults/estilo.yaml dentro de la carpeta de datos de"
+    echo "   pandoc. Para ver cuál es esa carpeta:"
+    echo "     pandoc --version | grep -i \"user data\""
+    echo "   Tiene que ser ~/.local/share/pandoc. Si muestra ~/.pandoc, es porque"
+    echo "   ~/.local/share/pandoc no existe (pandoc usa la carpeta vieja solo en"
+    echo "   ese caso)."
+  } >&2
+  exit 1
+fi
 
 # opcion_i queda como pares (-i carpeta -i carpeta ...): se toman las carpetas,
 # se comprueba que existan y se pasan a ruta absoluta.
@@ -152,7 +185,7 @@ carpetas_imagenes=()
 for (( k = 2; k <= $#opcion_i; k += 2 )); do
   carpeta="${opcion_i[k]#=}"      # --imagenes=carpeta deja un "=" adelante
   if [[ ! -d $carpeta ]]; then
-    echo "❌ La carpeta de imágenes '$carpeta' no existe. $uso"
+    echo "❌ La carpeta de imágenes '$carpeta' no existe. $uso" >&2
     exit 1
   fi
   carpetas_imagenes+=("${carpeta:A}")
@@ -160,14 +193,17 @@ done
 
 # --- 1. Construimos la lista de archivos a convertir --------------------------
 archivos=()
+invalidos=()   # argumentos que no existen o no son Markdown (cuentan como error)
 
 if (( $# > 0 )); then
   # Si pasaste archivos por argumento: md2pdf a.md b.md
   for archivo in "$@"; do
     if [[ ! -f "$archivo" ]]; then
-      echo "⚠️ Saltando '$archivo': no existe."
+      echo "⚠️ Saltando '$archivo': no existe." >&2
+      invalidos+=("$archivo")
     elif [[ "${(L)archivo:e}" != (md|markdown) ]]; then
-      echo "⚠️ Saltando '$archivo': no es un archivo Markdown (.md)."
+      echo "⚠️ Saltando '$archivo': no es un archivo Markdown (.md)." >&2
+      invalidos+=("$archivo")
     else
       archivos+=("$archivo")
     fi
@@ -181,7 +217,8 @@ fi
 # --- 2. Si no hay archivos, salimos -------------------------------------------
 if (( ${#archivos[@]} == 0 )); then
   echo "No se encontraron archivos Markdown para convertir."
-  exit 0
+  (( ${#invalidos[@]} == 0 ))   # 0 si no había nada; 1 si los indicados no servían
+  exit
 fi
 
 # --- 3. Mostrar qué se va a convertir (el PDF reemplaza la extensión .md) -----
@@ -393,6 +430,21 @@ PERL
 # del .md gracias a --resource-path.
 fallidos=()
 temporal=""
+# Perl y sus módulos se comprueban la primera vez que hace falta traducir
+# (en Debian/Ubuntu vienen en el paquete "perl"; "perl-base" no alcanza).
+perl_listo=""
+perl_disponible() {
+  if [[ -z $perl_listo ]]; then
+    if perl -MFile::Find -MEncode -MUnicode::Normalize -e 1 2>/dev/null; then
+      perl_listo=1
+    else
+      perl_listo=0
+      echo "❌ Falta perl (o sus módulos) para traducir la sintaxis que pandoc no entiende." >&2
+      echo "   Instalalo con: sudo apt install perl" >&2
+    fi
+  fi
+  (( perl_listo ))
+}
 # Borrar la copia temporal al salir, también si se cancela con Ctrl+C.
 trap 'rm -f -- ${temporal:+"$temporal"}' EXIT
 trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
@@ -401,10 +453,14 @@ for archivo in "${archivos[@]}"; do
   entrada="$archivo"
   temporal=""
   if grep -q -e '\[\[' -e '!\[' -e '\[!' -- "$archivo"; then
+    if ! perl_disponible; then
+      echo "❌ Error al convertir: $archivo" >&2
+      fallidos+=("$archivo"); continue
+    fi
     temporal="$(mktemp --suffix=.md)"
     if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
          IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR" < "$archivo" > "$temporal"; then
-      echo "❌ Error al traducir la sintaxis que pandoc no entiende: $archivo"
+      echo "❌ Error al traducir la sintaxis que pandoc no entiende: $archivo" >&2
       fallidos+=("$archivo"); rm -f "$temporal"; continue
     fi
     entrada="$temporal"
@@ -413,14 +469,17 @@ for archivo in "${archivos[@]}"; do
   if pandoc -d estilo --resource-path="${(j.:.)rutas}" --output="$salida" -- "$entrada"; then
     echo "✔ Generado: $salida"
   else
-    echo "❌ Error al convertir: $archivo"
+    echo "❌ Error al convertir: $archivo" >&2
     fallidos+=("$archivo")
   fi
   [[ -n $temporal ]] && rm -f "$temporal"
 done
 
 if (( ${#fallidos[@]} > 0 )); then
-  echo "⚠️ No se pudieron convertir ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}"
-  exit 1
+  echo "⚠️ No se pudieron convertir ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}" >&2
 fi
+if (( ${#invalidos[@]} > 0 )); then
+  echo "⚠️ Se saltearon ${#invalidos[@]} argumento(s) que no existen o no son Markdown: ${(j:, :)invalidos}" >&2
+fi
+(( ${#fallidos[@]} + ${#invalidos[@]} == 0 )) || exit 1
 echo "✅ Conversión completa."

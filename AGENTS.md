@@ -12,6 +12,10 @@ Este archivo define las convenciones y reglas que deben seguir los asistentes de
   * `install.sh`: sincroniza enlaces simbólicos en `/usr/local/bin` hacia los scripts ejecutables del repositorio (y los quita con `--uninstall`). Nunca modifica ni borra nada en `/usr/local/bin` que no sea un enlace apuntando a este repositorio.
 * **Separación con Pandoc config**:
   * `common/md2pdf` **no define el aspecto visual de los PDF** (motor LaTeX, fuentes, márgenes, colores, cuadros, filtros). Todo eso vive en el repositorio separado **[Pandoc config](https://github.com/Gez-Schegtel/My-Pandoc-Config)** (`~/.local/share/pandoc`), que `md2pdf` invoca mediante `pandoc -d estilo`. Nunca agregar opciones de estilo visual dentro de `md2pdf`.
+  * `common/pdf2md` hace el camino inverso: reconstruye el archivo `.md` a partir de un PDF (especialmente los generados con `md2pdf` / `pandoc -d estilo`).
+* **Carpetas temporales de prueba (`pruebas*`)**:
+  * Durante el desarrollo se pueden armar y usar carpetas temporales llamadas `pruebas*` (por ejemplo `pruebas/`, `pruebas temp/`, etc.) para probar los scripts con archivos de referencia.
+  * Estas carpetas quedan excluidas del repositorio remoto mediante `.gitignore` (`pruebas*/`) y nunca deben incluirse en los commits.
 
 ---
 
@@ -64,5 +68,5 @@ Hay tres pares de scripts que comparten lógica. Al corregir un error o cambiar 
 ## 5. Verificación antes de finalizar un cambio
 
 1. **Sintaxis**: verificar con `bash -n` (scripts en Bash) o `zsh -n` (scripts en Zsh) que no haya errores de sintaxis.
-2. **Pruebas**: si se modificó lógica de procesamiento (como el código Perl de `mdnorm` o `md2pdf`), probar con casos reales y casos borde que el resultado sea el esperado.
+2. **Pruebas**: si se modificó lógica de procesamiento (como el código de `mdnorm`, `md2pdf` o `pdf2md`), probar con casos reales y casos borde que el resultado sea el esperado.
 3. **Formato de Markdown**: si se editó `readme.md` o este archivo, verificar con `./common/mdnorm` que no tenga problemas de formato para `pandoc`.

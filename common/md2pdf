@@ -304,7 +304,7 @@ sub traducir {
     if (defined $extra) {
       for my $t (split /\|/, $extra) {
         $t =~ s/\\$//; $t =~ s/^\s+|\s+$//g;
-        if    ($t =~ /^(\d+)/)               { push @attr, "width=$1px" unless grep { /^width=/ } @attr; }
+        if    ($t =~ /^(\d+)(?:x\d+)?$/)     { push @attr, "width=$1px" unless grep { /^width=/ } @attr; }
         elsif (lc $t eq 'izquierda')          { push @attr, ".izquierda" unless grep { /^\.(izquierda|derecha)$/ } @attr; }
         elsif (lc $t eq 'derecha')            { push @attr, ".derecha"   unless grep { /^\.(izquierda|derecha)$/ } @attr; }
       }

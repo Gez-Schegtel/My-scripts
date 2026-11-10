@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # ==============================================================================
 # SCRIPT:  debian-updater
-# VERSIÓN: 1.2 (basado en ubuntu-updater 2.1)
+# VERSIÓN: 1.2 (basado en ubuntu-updater 2.2)
 #
 # DESCRIPCIÓN
 #   Actualiza por completo un sistema Debian DENTRO de la versión instalada:
@@ -75,6 +75,8 @@
 #   Opcionales: snap, flatpak, fwupdmgr, systemd-inhibit, curl o wget
 #               (para avisar si hay una versión nueva de Debian).
 #               Si alguna no está instalada, su paso se omite.
+#               python3 (viene con Debian): para separar las actualizaciones de
+#               firmware que se pueden instalar de las que no.
 # ==============================================================================
 
 set -uo pipefail

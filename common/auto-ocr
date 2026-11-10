@@ -25,7 +25,8 @@
 #
 # CÓDIGO DE SALIDA:
 #   0 si no hubo errores (aunque se haya salteado algún archivo), 1 si alguno
-#   falló o no se indicó ningún archivo.
+#   falló, no se indicó ningún archivo o falta una dependencia, 130 si se
+#   canceló con Ctrl+C.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - ocrmypdf
@@ -35,6 +36,15 @@
 # Instalación de dependencias en Debian/Ubuntu:
 #   sudo apt install ocrmypdf tesseract-ocr-spa unpaper
 # ==============================================================================
+
+# Comprobar que las herramientas necesarias estén instaladas antes de empezar
+for prog in ocrmypdf unpaper; do
+	if ! command -v "$prog" &>/dev/null; then
+		echo "❌ Error: '$prog' no está instalado. Instalalo con:"
+		echo "   sudo apt install ocrmypdf tesseract-ocr-spa unpaper"
+		exit 1
+	fi
+done
 
 # Verificar si se pasó al menos un archivo como argumento
 if [ "$#" -eq 0 ]; then
@@ -47,6 +57,10 @@ fi
 procesados=0
 fallidos=0
 salteados=0
+actual=""
+
+# Si se cancela con Ctrl+C, borrar el archivo a medias y detener el lote
+trap '[[ -n $actual ]] && rm -f -- "$actual"; echo; echo "Cancelado."; exit 130' INT TERM HUP
 
 # Bucle para procesar cada archivo que le pases al script
 for archivo in "$@"; do
@@ -83,10 +97,21 @@ for archivo in "$@"; do
 	echo "======================================================"
 
 	# Comando estrella de ocrmypdf ("--" por si el nombre empieza con "-")
-	if ocrmypdf --deskew --clean --oversample 300 --force-ocr -l spa -- "$archivo" "$nombre_salida"; then
+	actual="$nombre_salida"
+	ocrmypdf --deskew --clean --oversample 300 --force-ocr -l spa -- "$archivo" "$nombre_salida"
+	rc=$?
+	if ((rc == 0)); then
+		actual=""
 		echo "✅ ¡Éxito! Archivo guardado: $nombre_salida"
 		procesados=$((procesados + 1))
+	elif ((rc == 130)); then
+		rm -f -- "$nombre_salida"
+		echo
+		echo "Cancelado."
+		exit 130
 	else
+		rm -f -- "$nombre_salida"
+		actual=""
 		echo "❌ Error al intentar procesar: $archivo"
 		fallidos=$((fallidos + 1))
 	fi

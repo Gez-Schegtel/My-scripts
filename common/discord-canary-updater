@@ -33,10 +33,11 @@ TMP_DIR=$(mktemp -d) || exit 1
 chmod 755 "$TMP_DIR"
 DEB_FILE="$TMP_DIR/discord-canary.deb"
 trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
 
 # 2. Verificar si wget está instalado
 if ! command -v wget &>/dev/null; then
-	echo "❌ Error: wget no está instalado. Instálalo con:"
+	echo "❌ Error: wget no está instalado. Instalalo con:"
 	echo "   sudo apt install wget"
 	exit 1
 fi

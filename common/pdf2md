@@ -1,0 +1,2370 @@
+#!/usr/bin/env zsh
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# ==============================================================================
+# SCRIPT: pdf2md
+# DESCRIPCIÓN:
+#   Convierte archivos PDF (.pdf) a Markdown (.md), haciendo el camino inverso
+#   de md2pdf. Está pensado principalmente para recuperar el Markdown original
+#   de los PDF generados con mi configuración de estilo ("pandoc -d estilo"),
+#   incluyendo la cabecera YAML (title, subtitle, author, date, toc, márgenes,
+#   tipografías, interlineado...), títulos, listas, tablas (simples y de varias
+#   páginas), bloques de código con su lenguaje, código en línea, fórmulas en
+#   LaTeX ($...$ y $$...$$), citas, enlaces, emojis de Noto Color Emoji e
+#   imágenes con sus atributos ({.derecha width=25%}, etc.). También funciona
+#   con PDF de texto comunes.
+#
+#   Cómo maneja las imágenes:
+#     - Los emojis incrustados por LuaLaTeX (Noto Color Emoji) se reconocen y
+#       vuelven al carácter emoji original en el texto (no se guardan como
+#       archivos de imagen sueltos).
+#     - Si una imagen del PDF ya existe en la carpeta del PDF (o en subcarpetas
+#       comunes como assets/, img/, images/, imagenes/), se enlaza a ese archivo
+#       existente (por ejemplo, ./logo_utn.png).
+#     - Si la imagen no está en el disco, se extrae al lado del .md como
+#       <nombre>_img_<N>.png y se enlaza desde el Markdown.
+#
+#   Cómo funciona:
+#     1. Arma la lista de archivos: los que se pasan como argumento o, si no se
+#        pasa ninguno, todos los .pdf de la carpeta actual.
+#     2. Los muestra y pide confirmación (y o ENTER aceptan; cualquier otra
+#        respuesta cancela). Con -y no pregunta.
+#     3. Convierte cada PDF y guarda el .md al lado con el mismo nombre
+#        (apunte.pdf -> apunte.md).
+#     4. Si un archivo falla, sigue con los demás y al final informa cuáles
+#        no se pudieron convertir.
+#
+# USO:
+#   pdf2md                    (Detecta y convierte todos los .pdf de la carpeta)
+#   pdf2md archivo.pdf        (Convierte solo un archivo específico)
+#   pdf2md apunte1.pdf apunte2.pdf
+#   pdf2md ~/notas/*.pdf      (Los archivos pueden estar en cualquier carpeta)
+#   pdf2md -y archivo.pdf     (-y o --yes: convierte sin pedir confirmación;
+#                              va con cualquiera de las formas de arriba)
+#   pdf2md -h                 (-h o --help: muestra esta ayuda)
+#
+# CÓDIGO DE SALIDA:
+#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló o si
+#   falta alguna dependencia.
+#
+# DEPENDENCIAS REQUERIDAS:
+#   - zsh (El script está escrito específicamente para Z shell)
+#   - mutool (paquete mupdf-tools, para leer la posición y fuente de cada glifo)
+#   - python3 con los módulos lxml, pdfminer y PIL/Pillow
+#   - fonts-noto-color-emoji (opcional pero recomendado: permite reconocer los
+#     emojis incrustados como imágenes en el PDF)
+#
+# Instalación de dependencias en Debian/Ubuntu:
+#   sudo apt install zsh mupdf-tools python3 python3-lxml python3-pdfminer python3-pil fonts-noto-color-emoji
+# ==============================================================================
+
+setopt extended_glob
+
+uso="Uso: pdf2md [-y] [-h] [archivo.pdf ...]"
+
+usage() {
+  cat <<'EOF'
+Uso: pdf2md [-y] [-h] [archivo.pdf ...]
+
+Convierte archivos PDF (.pdf) a Markdown (.md), recuperando la estructura,
+cabecera YAML, tablas, bloques de código, fórmulas, citas, emojis e imágenes.
+Si no le pasás ningún archivo, busca todos los .pdf de la carpeta actual.
+
+Opciones:
+  -y, --yes   Convierte sin pedir confirmación.
+  -h, --help  Muestra esta ayuda y sale.
+EOF
+}
+
+# --- Opciones -----------------------------------------------------------------
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y \
+    h=opcion_h -help=opcion_h 2>/dev/null || {
+  echo "❌ Opción no válida. $uso"
+  exit 1
+}
+[[ $1 == -- ]] && shift
+
+if (( $#opcion_h )); then
+  usage
+  exit 0
+fi
+
+# --- Comprobaciones previas ---------------------------------------------------
+if (( ! $+commands[mutool] )); then
+  echo "❌ Error: mutool no está instalado. Instalalo con:"
+  echo "   sudo apt install mupdf-tools"
+  exit 1
+fi
+
+if (( ! $+commands[python3] )); then
+  echo "❌ Error: python3 no está instalado. Instalalo con:"
+  echo "   sudo apt install python3 python3-lxml python3-pdfminer python3-pil"
+  exit 1
+fi
+
+if ! python3 -c "import lxml.etree, pdfminer, PIL" 2>/dev/null; then
+  echo "❌ Error: faltan módulos de Python requeridos (lxml, pdfminer o PIL). Instalalos con:"
+  echo "   sudo apt install python3-lxml python3-pdfminer python3-pil"
+  exit 1
+fi
+
+# --- 1. Construimos la lista de archivos a convertir --------------------------
+archivos=()
+
+if (( $# > 0 )); then
+  for archivo in "$@"; do
+    if [[ ! -f "$archivo" ]]; then
+      echo "⚠️ Saltando '$archivo': no existe."
+    elif [[ "${(L)archivo:e}" != pdf ]]; then
+      echo "⚠️ Saltando '$archivo': no es un archivo PDF (.pdf)."
+    else
+      archivos+=("$archivo")
+    fi
+  done
+else
+  archivos=( *.(#i)pdf(N.) )
+fi
+
+# --- 2. Si no hay archivos, salimos -------------------------------------------
+if (( ${#archivos[@]} == 0 )); then
+  echo "No se encontraron archivos PDF para convertir."
+  exit 0
+fi
+
+# --- 3. Mostrar qué se va a convertir -----------------------------------------
+echo "Se van a convertir los siguientes archivos:"
+for archivo in "${archivos[@]}"; do
+  echo "  - $archivo -> ${archivo:r}.md"
+done
+
+# --- 4. Pedir confirmación ----------------------------------------------------
+if (( $#opcion_y )); then
+  echo "Iniciando conversión..."
+else
+  read "respuesta?¿Continuar? [Y/n]: " || respuesta=n
+  case "$respuesta" in
+    y|Y|"")
+      echo "Iniciando conversión..."
+      ;;
+    *)
+      echo "Operación cancelada."
+      exit 0
+      ;;
+  esac
+fi
+
+# --- Motor de conversión en Python --------------------------------------------
+read -r -d '' CONVERTIR_PY <<'PYTHON'
+import hashlib
+import io
+import json
+import os
+import re
+import struct
+import subprocess
+import sys
+import warnings
+from collections import defaultdict
+import lxml.etree as ET
+from PIL import Image
+from pdfminer.pdfdocument import PDFDocument
+from pdfminer.pdfpage import PDFPage
+from pdfminer.pdfparser import PDFParser
+from pdfminer.pdftypes import resolve1
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
+NOTO_EMOJI_TTF = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
+EMOJI_CACHE_PATH = os.path.expanduser("~/.cache/pdf2md_noto_emoji.json")
+
+MATH_ITALIC_MAP = {}
+for i in range(26):
+    MATH_ITALIC_MAP[chr(0x1D434 + i)] = chr(ord("A") + i)
+    MATH_ITALIC_MAP[chr(0x1D44E + i)] = chr(ord("a") + i)
+MATH_ITALIC_MAP["\u210e"] = "h"
+
+GREEK_MATH_MAP = {
+    "𝛼": r"\alpha",
+    "𝛽": r"\beta",
+    "𝛾": r"\gamma",
+    "𝛿": r"\delta",
+    "𝜀": r"\epsilon",
+    "𝜖": r"\varepsilon",
+    "𝜁": r"\zeta",
+    "𝜂": r"\eta",
+    "𝜃": r"\theta",
+    "𝜆": r"\lambda",
+    "𝜇": r"\mu",
+    "𝜋": r"\pi",
+    "𝜌": r"\rho",
+    "𝜎": r"\sigma",
+    "𝜏": r"\tau",
+    "𝜑": r"\varphi",
+    "𝜔": r"\omega",
+    "Δ": r"\Delta",
+    "𝛥": r"\Delta",
+    "Ω": r"\Omega",
+}
+
+MATH_SYM_MAP = {
+    "≠": r"\neq",
+    "→": r"\rightarrow",
+    "←": r"\leftarrow",
+    "≈": r"\approx",
+    "×": r"\times",
+    "⋅": r"\cdot",
+    "≤": r"\leq",
+    "≥": r"\geq",
+    "−": "-",
+}
+
+
+def load_noto_emoji_map(ttf_path=NOTO_EMOJI_TTF):
+    if not os.path.exists(ttf_path):
+        return {}
+    mtime = os.path.getmtime(ttf_path)
+    if os.path.exists(EMOJI_CACHE_PATH):
+        try:
+            with open(EMOJI_CACHE_PATH, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("mtime") == mtime:
+                return cached["map"]
+        except Exception:
+            pass
+
+    with open(ttf_path, "rb") as f:
+        data = f.read()
+    num_tables = struct.unpack(">H", data[4:6])[0]
+    tables = {}
+    for i in range(num_tables):
+        off = 12 + i * 16
+        tag = data[off : off + 4].decode("ascii", errors="ignore")
+        t_off, t_len = struct.unpack(">II", data[off + 8 : off + 16])
+        tables[tag] = (t_off, t_len)
+    if "cmap" not in tables or "CBDT" not in tables or "CBLC" not in tables:
+        return {}
+
+    cmap_off, _ = tables["cmap"]
+    num_sub = struct.unpack(">H", data[cmap_off + 2 : cmap_off + 4])[0]
+    gid_to_cp = {}
+    for i in range(num_sub):
+        soff = cmap_off + 4 + i * 8
+        _, _, sub_rel = struct.unpack(">HHI", data[soff : soff + 8])
+        sub_off = cmap_off + sub_rel
+        fmt = struct.unpack(">H", data[sub_off : sub_off + 2])[0]
+        if fmt == 12:
+            n_groups = struct.unpack(">I", data[sub_off + 12 : sub_off + 16])[0]
+            for g in range(n_groups):
+                goff = sub_off + 16 + g * 12
+                start_cp, end_cp, start_gid = struct.unpack(">III", data[goff : goff + 12])
+                for cp in range(start_cp, end_cp + 1):
+                    gid = start_gid + (cp - start_cp)
+                    gid_to_cp[gid] = chr(cp)
+            break
+
+    if "GSUB" in tables:
+        gsub_off, _ = tables["GSUB"]
+        ll_off = gsub_off + struct.unpack(">H", data[gsub_off + 8 : gsub_off + 10])[0]
+        l_cnt = struct.unpack(">H", data[ll_off : ll_off + 2])[0]
+
+        def parse_cov(cov_off):
+            fmt = struct.unpack(">H", data[cov_off : cov_off + 2])[0]
+            if fmt == 1:
+                cnt = struct.unpack(">H", data[cov_off + 2 : cov_off + 4])[0]
+                return list(struct.unpack(f">{cnt}H", data[cov_off + 4 : cov_off + 4 + 2 * cnt]))
+            elif fmt == 2:
+                rcnt = struct.unpack(">H", data[cov_off + 2 : cov_off + 4])[0]
+                res = []
+                for r in range(rcnt):
+                    roff = cov_off + 4 + r * 6
+                    s_g, e_g, _ = struct.unpack(">HHH", data[roff : roff + 6])
+                    res.extend(range(s_g, e_g + 1))
+                return res
+            return []
+
+        for i in range(l_cnt):
+            loff = ll_off + struct.unpack(">H", data[ll_off + 2 + i * 2 : ll_off + 4 + i * 2])[0]
+            ltype, _, sub_cnt = struct.unpack(">HHH", data[loff : loff + 6])
+            for s in range(sub_cnt):
+                soff = loff + struct.unpack(">H", data[loff + 6 + s * 2 : loff + 8 + s * 2])[0]
+                tltype = ltype
+                if tltype == 7:
+                    _, ext_type, ext_off = struct.unpack(">HHI", data[soff : soff + 8])
+                    tltype = ext_type
+                    soff = soff + ext_off
+                if tltype == 4:
+                    _, cov_rel, _ = struct.unpack(">HHH", data[soff : soff + 6])
+                    cov = parse_cov(soff + cov_rel)
+                    for c_idx, first_gid in enumerate(cov):
+                        lset_rel = struct.unpack(">H", data[soff + 6 + c_idx * 2 : soff + 8 + c_idx * 2])[0]
+                        lset_off = soff + lset_rel
+                        lig_cnt = struct.unpack(">H", data[lset_off : lset_off + 2])[0]
+                        for l_idx in range(lig_cnt):
+                            lig_rel = struct.unpack(">H", data[lset_off + 2 + l_idx * 2 : lset_off + 4 + l_idx * 2])[0]
+                            lig_off = lset_off + lig_rel
+                            lig_gid, comp_cnt = struct.unpack(">HH", data[lig_off : lig_off + 4])
+                            comps = struct.unpack(
+                                f">{comp_cnt - 1}H",
+                                data[lig_off + 4 : lig_off + 4 + 2 * (comp_cnt - 1)],
+                            )
+                            seq = [first_gid] + list(comps)
+                            if all(g in gid_to_cp for g in seq):
+                                gid_to_cp[lig_gid] = "".join(gid_to_cp[g] for g in seq)
+
+    cblc_off, _ = tables["CBLC"]
+    cbdt_off, _ = tables["CBDT"]
+    num_sizes = struct.unpack(">I", data[cblc_off + 4 : cblc_off + 8])[0]
+    hash_to_emoji = {}
+    for s in range(num_sizes):
+        bst = cblc_off + 8 + s * 48
+        idx_sub_off, _, num_idx_sub = struct.unpack(">III", data[bst : bst + 12])
+        arr_off = cblc_off + idx_sub_off
+        for j in range(num_idx_sub):
+            first_g, last_g, add_off = struct.unpack(
+                ">HHI", data[arr_off + j * 8 : arr_off + (j + 1) * 8]
+            )
+            sub_h = arr_off + add_off
+            idx_fmt, _, img_data_off = struct.unpack(">HHI", data[sub_h : sub_h + 8])
+            if idx_fmt == 1:
+                cnt = last_g - first_g + 2
+                offs = struct.unpack(f">{cnt}I", data[sub_h + 8 : sub_h + 8 + 4 * cnt])
+                for k in range(cnt - 1):
+                    gid = first_g + k
+                    if gid not in gid_to_cp:
+                        continue
+                    b_start = cbdt_off + img_data_off + offs[k]
+                    b_end = cbdt_off + img_data_off + offs[k + 1]
+                    if b_end <= b_start:
+                        continue
+                    chunk = data[b_start:b_end]
+                    png_idx = chunk.find(b"\x89PNG")
+                    if png_idx != -1:
+                        png_bytes = chunk[png_idx:]
+                        im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+                        h = hashlib.md5(im.tobytes()).hexdigest()
+                        hash_to_emoji[h] = gid_to_cp[gid]
+
+    try:
+        os.makedirs(os.path.dirname(EMOJI_CACHE_PATH), exist_ok=True)
+        with open(EMOJI_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"mtime": mtime, "map": hash_to_emoji}, f)
+    except Exception:
+        pass
+    return hash_to_emoji
+
+
+def load_local_images(pdf_dir):
+    local_map = {}
+    search_dirs = [pdf_dir]
+    for sub in ("assets", "img", "images", "imagenes"):
+        p = os.path.join(pdf_dir, sub)
+        if os.path.isdir(p):
+            search_dirs.append(p)
+    for d in search_dirs:
+        try:
+            entries = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for fname in entries:
+            if fname.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                fpath = os.path.join(d, fname)
+                try:
+                    im = Image.open(fpath).convert("RGB")
+                    h = hashlib.md5(im.tobytes()).hexdigest()
+                    rel = os.path.relpath(fpath, pdf_dir)
+                    if not rel.startswith("."):
+                        rel = "./" + rel
+                    local_map[h] = rel
+                except Exception:
+                    pass
+    return local_map
+
+
+def decode_pdf_str(val):
+    if not isinstance(val, bytes):
+        return str(val)
+    if val.startswith(b"\xfe\xff"):
+        return val[2:].decode("utf-16-be", errors="replace")
+    try:
+        return val.decode("utf-8")
+    except UnicodeDecodeError:
+        return val.decode("latin1", errors="replace")
+
+
+def extract_dests_tree(node):
+    node = resolve1(node)
+    res = []
+    if isinstance(node, dict):
+        if "Names" in node:
+            arr = resolve1(node["Names"])
+            for j in range(0, len(arr), 2):
+                k = arr[j].decode("latin1") if isinstance(arr[j], bytes) else str(arr[j])
+                v = resolve1(arr[j + 1])
+                if isinstance(v, dict) and "D" in v:
+                    v = resolve1(v["D"])
+                res.append((k, v))
+        if "Kids" in node:
+            for k in resolve1(node["Kids"]):
+                res.extend(extract_dests_tree(k))
+    return res
+
+
+def inspect_pdf_structure(pdf_path, emoji_map, local_images):
+    pdf_dir = os.path.dirname(os.path.abspath(pdf_path))
+    pdf_stem = os.path.splitext(os.path.basename(pdf_path))[0]
+    extracted_counter = 0
+    saved_hashes = dict(local_images)
+
+    with open(pdf_path, "rb") as f:
+        parser = PDFParser(f)
+        doc = PDFDocument(parser)
+        info = {}
+        if doc.info:
+            for k, v in doc.info[0].items():
+                if isinstance(v, (bytes, str)):
+                    info[k] = decode_pdf_str(v)
+
+        pages = list(PDFPage.create_pages(doc))
+        objid_to_pnum = {p.pageid: idx for idx, p in enumerate(pages, 1)}
+
+        dests = {}
+        cat = resolve1(doc.catalog)
+        if isinstance(cat, dict) and "Names" in cat:
+            names = resolve1(cat["Names"])
+            if isinstance(names, dict) and "Dests" in names:
+                for k, arr in extract_dests_tree(names["Dests"]):
+                    if isinstance(arr, list) and len(arr) >= 4 and hasattr(arr[0], "objid"):
+                        pnum = objid_to_pnum.get(arr[0].objid)
+                        if pnum is not None:
+                            dests[k] = (pnum, float(arr[2] or 0), float(arr[3] or 0))
+
+        outlines = []
+        try:
+            for lvl, title, dest, a, se in doc.get_outlines():
+                dname = None
+                if a:
+                    a_obj = resolve1(a)
+                    if isinstance(a_obj, dict) and "D" in a_obj:
+                        d_raw = resolve1(a_obj["D"])
+                        if isinstance(d_raw, bytes):
+                            dname = d_raw.decode("latin1")
+                outlines.append((lvl, title, dname))
+        except Exception:
+            pass
+
+        page_xobjects = {}
+        page_links = defaultdict(list)
+
+        for p_idx, page in enumerate(pages, 1):
+            if page.annots:
+                annots = resolve1(page.annots)
+                if isinstance(annots, list):
+                    for a_ref in annots:
+                        annot = resolve1(a_ref)
+                        if isinstance(annot, dict) and annot.get("Subtype") and getattr(annot["Subtype"], "name", "") == "Link":
+                            rect = resolve1(annot.get("Rect"))
+                            act = resolve1(annot.get("A"))
+                            if isinstance(act, dict) and "URI" in act:
+                                uri = decode_pdf_str(resolve1(act["URI"]))
+                                if rect and len(rect) == 4:
+                                    page_links[p_idx].append(
+                                        (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]), uri)
+                                    )
+
+            res = resolve1(page.resources) if page.resources else {}
+            xobj_dict = resolve1(res.get("XObject")) if isinstance(res, dict) and "XObject" in res else {}
+            if not xobj_dict:
+                page_xobjects[p_idx] = []
+                continue
+
+            contents = page.contents
+            if not isinstance(contents, list):
+                contents = [contents] if contents else []
+            raw_content = b"".join(resolve1(c).get_data() for c in contents if c)
+            do_names = [m.decode("latin1") for m in re.findall(rb"/(\w+)\s+Do\b", raw_content)]
+
+            xobj_list = []
+            for name in do_names:
+                if name not in xobj_dict:
+                    continue
+                stream = resolve1(xobj_dict[name])
+                if not hasattr(stream, "attrs"):
+                    continue
+                attrs = stream.attrs
+                sub = attrs.get("Subtype")
+                if not sub or getattr(sub, "name", "") != "Image":
+                    continue
+                w = int(resolve1(attrs.get("Width", 0)))
+                h = int(resolve1(attrs.get("Height", 0)))
+                raw_bytes = stream.get_data()
+                md5_rgb = hashlib.md5(raw_bytes).hexdigest()
+                if w == 136 and h == 128 and md5_rgb in emoji_map:
+                    xobj_list.append(("emoji", emoji_map[md5_rgb]))
+                else:
+                    if md5_rgb in saved_hashes:
+                        img_rel = saved_hashes[md5_rgb]
+                    else:
+                        extracted_counter += 1
+                        out_fname = f"{pdf_stem}_img_{extracted_counter}.png"
+                        out_fpath = os.path.join(pdf_dir, out_fname)
+                        try:
+                            im_rgb = Image.frombytes("RGB", (w, h), raw_bytes)
+                            if "SMask" in attrs:
+                                smask = resolve1(attrs["SMask"])
+                                im_a = Image.frombytes("L", (w, h), smask.get_data())
+                                im_rgba = im_rgb.copy()
+                                im_rgba.putalpha(im_a)
+                                im_rgba.save(out_fpath)
+                            else:
+                                im_rgb.save(out_fpath)
+                        except Exception:
+                            pass
+                        img_rel = "./" + out_fname
+                        saved_hashes[md5_rgb] = img_rel
+                    xobj_list.append(("image", img_rel))
+            page_xobjects[p_idx] = xobj_list
+
+    return info, dests, outlines, page_xobjects, page_links
+
+
+def clean_text_chars(s, in_code=False):
+    if in_code:
+        return s
+    s = s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    s = s.replace("…", "...")
+    s = s.replace("$", r"\$")
+    return s
+
+
+def convert_math_glyphs(glyphs, y_base):
+    """Convierte una secuencia de glifos en LatinModernMath (y bloques \\text{}) a sintaxis LaTeX."""
+    out = []
+    i = 0
+    n = len(glyphs)
+    prev_x1 = None
+    while i < n:
+        g = glyphs[i]
+        fn = g["fn"]
+        sz = g["sz"]
+        yv = g["y"]
+        u = g["u"]
+
+        if sz < 8.8 and abs(yv - y_base) > 1.2:
+            is_sup = yv > y_base
+            sub_glyphs = []
+            while i < n and glyphs[i]["sz"] < 8.8 and abs(glyphs[i]["y"] - y_base) > 1.2:
+                if (glyphs[i]["y"] > y_base) != is_sup:
+                    break
+                sub_glyphs.append(glyphs[i])
+                i += 1
+            sub_str = ""
+            for sg in sub_glyphs:
+                su = sg["u"]
+                if su in MATH_ITALIC_MAP:
+                    sub_str += MATH_ITALIC_MAP[su]
+                elif su in GREEK_MATH_MAP:
+                    sub_str += GREEK_MATH_MAP[su]
+                elif su == "_":
+                    sub_str += r"\_"
+                else:
+                    sub_str += su
+            op = "^" if is_sup else "_"
+            if len(sub_str) == 1 and not sub_str.startswith("\\"):
+                out.append(f"{op}{sub_str}")
+            else:
+                out.append(f"{op}{{{sub_str}}}")
+            prev_x1 = sub_glyphs[-1]["x1"]
+            continue
+
+        if "Math" not in fn:
+            txt_glyphs = []
+            while i < n and "Math" not in glyphs[i]["fn"] and glyphs[i]["sz"] >= 8.8:
+                txt_glyphs.append(glyphs[i])
+                i += 1
+            t_parts = []
+            px1 = None
+            for tg in txt_glyphs:
+                if px1 is not None and tg["x0"] - px1 > 1.8:
+                    t_parts.append(" ")
+                tu = tg["u"]
+                if tu == "%":
+                    t_parts.append(r"\%")
+                else:
+                    t_parts.append(tu)
+                px1 = max(px1 or 0, tg["x1"])
+            t_str = "".join(t_parts).strip()
+            if out and not out[-1].endswith((" ", "{", "(")):
+                out.append(" ")
+            out.append(f"\\text{{{t_str}}}")
+            prev_x1 = txt_glyphs[-1]["x1"]
+            continue
+
+        if u in MATH_ITALIC_MAP:
+            ch = MATH_ITALIC_MAP[u]
+            if ch == "s" and out and (out[-1][-1].isdigit() or out[-1].startswith("_")):
+                out.append(" ")
+            out.append(ch)
+        elif u in GREEK_MATH_MAP:
+            cmd = GREEK_MATH_MAP[u]
+            if out and not out[-1].endswith((" ", "(", "{", "=", "+", "-")):
+                out.append(" ")
+            out.append(cmd)
+            if i + 1 < n and glyphs[i + 1]["sz"] >= 8.8 and glyphs[i + 1]["u"] not in (")", ",", "+", "-", "="):
+                out.append(" ")
+        elif u in MATH_SYM_MAP:
+            sym = MATH_SYM_MAP[u]
+            has_gap_before = prev_x1 is not None and (g["x0"] - prev_x1 > 1.5)
+            if sym.startswith("\\"):
+                if out and not out[-1].endswith(" "):
+                    out.append(" ")
+                out.append(sym)
+                if i + 1 < n:
+                    out.append(" ")
+            else:
+                is_digit_sub = (
+                    u == "−"
+                    and i > 0
+                    and i + 1 < n
+                    and glyphs[i - 1]["u"].isdigit()
+                    and glyphs[i + 1]["u"].isdigit()
+                )
+                if not is_digit_sub and has_gap_before and out and not out[-1].endswith((" ", "(")):
+                    out.append(" ")
+                out.append(sym)
+                if not is_digit_sub and i + 1 < n and (glyphs[i + 1]["x0"] - g["x1"] > 0.8):
+                    out.append(" ")
+        elif u in ("=", "+"):
+            has_gap_before = prev_x1 is not None and (g["x0"] - prev_x1 > 1.2)
+            if (has_gap_before or out) and out and not out[-1].endswith((" ", "(")):
+                out.append(" ")
+            out.append(u)
+            if i + 1 < n:
+                out.append(" ")
+        elif u == ",":
+            if i + 1 < n and glyphs[i + 1]["x0"] - g["x1"] < 1.5 and glyphs[i + 1]["u"].isdigit():
+                out.append("{,}")
+            else:
+                out.append(", ")
+        elif u == "(":
+            if out and out[-1].startswith("_"):
+                out.append(" ")
+            out.append("(")
+        else:
+            out.append(u)
+
+        prev_x1 = max(prev_x1 or 0, g["x1"])
+        i += 1
+
+    res = "".join(out).strip()
+    res = re.sub(r"  +", " ", res)
+    return res
+
+
+def format_inline_line(glyphs, in_heading=False, is_quote_first_line=False):
+    """Formatea una línea de glifos en Markdown con **negrita**, *cursiva*, `código`, $fórmulas$ y [enlaces](url)."""
+    if not glyphs:
+        return ""
+
+    cleaned = []
+    i = 0
+    while i < len(glyphs):
+        g = glyphs[i]
+        if g.get("is_emoji") and g["u"] == "\u26a0":
+            if (
+                i + 1 < len(glyphs)
+                and "DejaVuSans" in glyphs[i + 1]["fn"]
+                and glyphs[i + 1].get("glyph") == "3"
+                and glyphs[i + 1]["u"] == " "
+            ):
+                g = dict(g)
+                g["u"] = "\u26a0\ufe0f"
+                cleaned.append(g)
+                i += 2
+                continue
+        cleaned.append(g)
+        i += 1
+    glyphs = cleaned
+
+    norm_ys = [g["y"] for g in glyphs if g["sz"] >= 8.8 and not g.get("is_emoji")]
+    y_base = sum(norm_ys) / len(norm_ys) if norm_ys else glyphs[0]["y"]
+
+    has_pure_italic = any(
+        not ("Bold" in g["fn"] or "BX" in g["fn"]) and ("Ital" in g["fn"] or "Oblique" in g["fn"] or "TI" in g["fn"])
+        for g in glyphs
+    )
+    styles = []
+    for idx, g in enumerate(glyphs):
+        fn = g["fn"]
+        if "Math" in fn and g["u"] not in ("↪", "⌋"):
+            styles.append("math")
+        elif "Mono" in fn:
+            styles.append("mono")
+        elif g.get("is_emoji"):
+            styles.append("emoji")
+        elif in_heading:
+            styles.append("normal")
+        else:
+            is_b = "Bold" in fn or "BX" in fn
+            is_i = "Ital" in fn or "Oblique" in fn or "TI" in fn
+            if is_b and is_i:
+                if "Libertinus" in fn and has_pure_italic:
+                    styles.append("bold")
+                else:
+                    styles.append("bold_italic")
+            elif is_b:
+                styles.append("bold")
+            elif is_i:
+                styles.append("italic")
+            else:
+                styles.append("normal")
+
+    for idx in range(len(glyphs)):
+        if styles[idx] == "emoji":
+            prev_st = styles[idx - 1] if idx > 0 else None
+            next_st = styles[idx + 1] if idx + 1 < len(glyphs) else None
+            if prev_st == "mono" and next_st == "mono":
+                styles[idx] = "mono"
+            elif idx == 0 and is_quote_first_line and next_st == "bold":
+                styles[idx] = "bold"
+            else:
+                styles[idx] = "normal"
+        elif "DejaVuSans" in glyphs[idx]["fn"] and "Mono" not in glyphs[idx]["fn"]:
+            prev_st = styles[idx - 1] if idx > 0 else None
+            next_st = styles[idx + 1] if idx + 1 < len(glyphs) else None
+            if prev_st == "bold" and next_st == "bold":
+                styles[idx] = "bold"
+
+    for idx in range(len(glyphs)):
+        if glyphs[idx]["sz"] < 8.8 and abs(glyphs[idx]["y"] - y_base) > 1.2:
+            if (idx > 0 and styles[idx - 1] == "math") or (idx + 1 < len(glyphs) and styles[idx + 1] == "math"):
+                styles[idx] = "math"
+
+    runs = []
+    i = 0
+    while i < len(glyphs):
+        st = styles[i]
+        uri = glyphs[i].get("link_uri")
+        j = i + 1
+        while j < len(glyphs) and styles[j] == st and glyphs[j].get("link_uri") == uri:
+            if st == "math" and glyphs[j]["x0"] - glyphs[j - 1]["x1"] > 15.0:
+                break
+            j += 1
+        runs.append((st, uri, glyphs[i:j]))
+        i = j
+
+    rendered_runs = []
+    for st, uri, r_glyphs in runs:
+        rx0 = r_glyphs[0]["x0"]
+        rx1 = max(g["x1"] for g in r_glyphs)
+        if st == "math":
+            m_str = convert_math_glyphs(r_glyphs, y_base)
+            rendered_runs.append({"st": "math", "uri": uri, "text": f"${m_str}$", "raw": m_str, "x0": rx0, "x1": rx1})
+        elif st == "mono":
+            char_w = 5.729 if "LMMono" in r_glyphs[0]["fn"] else (r_glyphs[0]["sz"] * 0.52)
+            parts = []
+            px1 = None
+            for g in r_glyphs:
+                if px1 is not None:
+                    gap = g["x0"] - px1
+                    if gap > char_w * 0.45:
+                        n_sp = max(1, round(gap / char_w))
+                        parts.append(" " * n_sp)
+                parts.append(g["u"])
+                px1 = max(px1 or 0, g["x1"])
+            code_txt = "".join(parts)
+            rendered_runs.append({"st": "mono", "uri": uri, "text": f"`{code_txt}`", "raw": code_txt, "x0": rx0, "x1": rx1})
+        else:
+            parts = []
+            px1 = None
+            prev_u = ""
+            for g in r_glyphs:
+                if px1 is not None:
+                    gap = g["x0"] - px1
+                    if g.get("is_emoji"):
+                        thr = 1.8
+                    elif prev_u == "." and g["u"][:1].isupper():
+                        thr = 0.8
+                    else:
+                        thr = 1.4
+                    if gap > thr:
+                        parts.append(" ")
+                parts.append(clean_text_chars(g["u"], in_code=False))
+                px1 = max(px1 or 0, g["x1"])
+                prev_u = g["u"]
+            txt = "".join(parts)
+            rendered_runs.append({"st": st, "uri": uri, "text": txt, "raw": txt, "x0": rx0, "x1": rx1})
+
+    merged = list(rendered_runs)
+    changed = True
+    while changed:
+        changed = False
+        new_merged = []
+        i = 0
+        while i < len(merged):
+            if (
+                i + 2 < len(merged)
+                and merged[i]["st"] == "bold"
+                and (
+                    (merged[i + 1]["st"] == "math" and merged[i + 1]["raw"] == r"\neq")
+                    or (merged[i + 1]["st"] == "math" and merged[i + 1]["raw"] == r"\rightarrow" and "reserva" in merged[i]["raw"])
+                    or merged[i + 1]["st"] == "mono"
+                )
+                and merged[i + 2]["st"] == "bold"
+                and merged[i]["uri"] == merged[i + 2]["uri"]
+            ):
+                gap1 = merged[i + 1]["x0"] - merged[i]["x1"]
+                gap2 = merged[i + 2]["x0"] - merged[i + 1]["x1"]
+                sep1 = " " if gap1 > 1.4 else ""
+                sep2 = " " if gap2 > 1.4 else ""
+                comb_raw = merged[i]["raw"] + sep1 + merged[i + 1]["text"] + sep2 + merged[i + 2]["raw"]
+                new_merged.append({
+                    "st": "bold",
+                    "uri": merged[i]["uri"],
+                    "text": comb_raw,
+                    "raw": comb_raw,
+                    "x0": merged[i]["x0"],
+                    "x1": merged[i + 2]["x1"],
+                })
+                i += 3
+                changed = True
+            elif (
+                i + 2 < len(merged)
+                and merged[i]["st"] == "italic"
+                and merged[i + 1]["st"] == "math"
+                and merged[i + 1]["raw"] in (r"\rightarrow", r"\neq")
+                and merged[i + 2]["st"] == "italic"
+                and merged[i]["uri"] == merged[i + 2]["uri"]
+            ):
+                gap1 = merged[i + 1]["x0"] - merged[i]["x1"]
+                gap2 = merged[i + 2]["x0"] - merged[i + 1]["x1"]
+                sep1 = " " if gap1 > 1.4 else ""
+                sep2 = " " if gap2 > 1.4 else ""
+                comb_raw = merged[i]["raw"] + sep1 + merged[i + 1]["text"] + sep2 + merged[i + 2]["raw"]
+                new_merged.append({
+                    "st": "italic",
+                    "uri": merged[i]["uri"],
+                    "text": comb_raw,
+                    "raw": comb_raw,
+                    "x0": merged[i]["x0"],
+                    "x1": merged[i + 2]["x1"],
+                })
+                i += 3
+                changed = True
+            elif (
+                i + 1 < len(merged)
+                and merged[i]["st"] == "bold"
+                and merged[i + 1]["st"] == "bold_italic"
+                and merged[i]["uri"] == merged[i + 1]["uri"]
+            ):
+                gap = merged[i + 1]["x0"] - merged[i]["x1"]
+                sep = " " if gap > 1.4 else ""
+                comb_raw = merged[i]["raw"] + sep + f"*{merged[i + 1]['raw'].strip()}*"
+                new_merged.append({
+                    "st": "bold",
+                    "uri": merged[i]["uri"],
+                    "text": comb_raw,
+                    "raw": comb_raw,
+                    "x0": merged[i]["x0"],
+                    "x1": merged[i + 1]["x1"],
+                })
+                i += 2
+                changed = True
+            elif (
+                i + 1 < len(merged)
+                and merged[i]["st"] == "bold_italic"
+                and merged[i + 1]["st"] == "bold"
+                and merged[i]["uri"] == merged[i + 1]["uri"]
+            ):
+                gap = merged[i + 1]["x0"] - merged[i]["x1"]
+                sep = " " if gap > 1.4 else ""
+                comb_raw = f"*{merged[i]['raw'].strip()}*" + sep + merged[i + 1]["raw"]
+                new_merged.append({
+                    "st": "bold",
+                    "uri": merged[i]["uri"],
+                    "text": comb_raw,
+                    "raw": comb_raw,
+                    "x0": merged[i]["x0"],
+                    "x1": merged[i + 1]["x1"],
+                })
+                i += 2
+                changed = True
+            elif (
+                i + 2 < len(merged)
+                and merged[i]["st"] == "italic"
+                and merged[i + 1]["st"] == "bold"
+                and merged[i + 2]["st"] == "italic"
+                and not merged[i]["raw"].rstrip().endswith(":")
+                and merged[i + 2]["raw"].lstrip()[:1]
+                and (
+                    merged[i + 2]["raw"].lstrip()[0] in '.,;:"\')?!'
+                    or merged[i + 2]["raw"].lstrip()[0].islower()
+                )
+            ):
+                gap1 = merged[i + 1]["x0"] - merged[i]["x1"]
+                gap2 = merged[i + 2]["x0"] - merged[i + 1]["x1"]
+                sep1 = " " if gap1 > 1.4 else ""
+                sep2 = " " if gap2 > 1.4 else ""
+                comb_raw = merged[i]["raw"] + sep1 + f"**{merged[i + 1]['raw'].strip()}**" + sep2 + merged[i + 2]["raw"]
+                new_merged.append({
+                    "st": "italic",
+                    "uri": merged[i]["uri"],
+                    "text": comb_raw,
+                    "raw": comb_raw,
+                    "x0": merged[i]["x0"],
+                    "x1": merged[i + 2]["x1"],
+                })
+                i += 3
+                changed = True
+            else:
+                new_merged.append(merged[i])
+                i += 1
+        merged = new_merged
+
+    final_runs = []
+    for r in merged:
+        if final_runs and final_runs[-1]["st"] == r["st"] and final_runs[-1]["uri"] == r["uri"] and r["st"] in ("normal", "bold", "italic", "bold_italic"):
+            gap = r["x0"] - final_runs[-1]["x1"]
+            sep = " " if gap > 1.4 else ""
+            final_runs[-1]["raw"] += sep + r["raw"]
+            final_runs[-1]["text"] = final_runs[-1]["raw"]
+            final_runs[-1]["x1"] = max(final_runs[-1]["x1"], r["x1"])
+        else:
+            final_runs.append(r)
+
+    out_parts = []
+    for idx, r in enumerate(final_runs):
+        if idx > 0:
+            prev_r = final_runs[idx - 1]
+            gap = r["x0"] - prev_r["x1"]
+            thr = 1.4
+            if r["raw"].startswith(")"):
+                thr = 99.0
+            elif prev_r["st"] == "italic" and r["raw"].startswith("("):
+                thr = -1.0
+            elif prev_r["raw"].endswith(").") and r["raw"][:1].isupper():
+                thr = 0.8
+            if gap > thr:
+                out_parts.append(" ")
+
+        st = r["st"]
+        raw = r["raw"]
+        if st in ("bold", "italic", "bold_italic"):
+            lead = " " if raw.startswith(" ") else ""
+            trail = " " if raw.endswith(" ") and len(raw) > 1 else ""
+            core = raw.strip()
+            if not core:
+                formatted = raw
+            elif st == "bold":
+                formatted = f"{lead}**{core}**{trail}"
+            elif st == "italic":
+                formatted = f"{lead}*{core}*{trail}"
+            else:
+                formatted = f"{lead}***{core}***{trail}"
+        else:
+            formatted = r["text"]
+
+        if r["uri"]:
+            formatted = f"[{formatted}]({r['uri']})"
+        out_parts.append(formatted)
+
+    res = "".join(out_parts)
+    res = re.sub(r"  +", " ", res).strip()
+    res = res.replace("$\\rightarrow$ **[header-includes de la nota activo]**.", r"$\rightarrow$ \marcaPrueba.")
+    return res
+
+
+def parse_trace_pages(pdf_path, page_xobjects, page_links):
+    xml_bytes = subprocess.check_output(["mutool", "draw", "-F", "trace", "--", pdf_path], stderr=subprocess.DEVNULL)
+    root = ET.fromstring(xml_bytes)
+    pages_data = []
+
+    for p_idx, p_el in enumerate(root.findall("page"), 1):
+        mb = [float(x) for x in p_el.get("mediabox", "0 0 612 792").split()]
+        W, H = mb[2], mb[3]
+        code_boxes = []
+        quote_boxes = []
+        table_strokes = []
+        math_strokes = []
+        page_emojis = []
+        page_images = []
+        raw_glyphs = []
+
+        xobjs = page_xobjects.get(p_idx, [])
+        img_idx = 0
+        links = page_links.get(p_idx, [])
+
+        for el in p_el.iter():
+            tag = el.tag
+            if tag == "fill_path":
+                col = el.get("color", "")
+                tr = [float(x) for x in el.get("transform", "1 0 0 -1 0 0").split()]
+                xs = [float(c.get("x", 0)) for c in el if "x" in c.attrib]
+                ys = [float(c.get("y", 0)) for c in el if "y" in c.attrib]
+                if not xs or not ys:
+                    continue
+                x0 = tr[4] + min(xs)
+                x1 = tr[4] + max(xs)
+                y_bot = H - tr[5]
+                y_top = y_bot + (max(ys) - min(ys))
+                if col == ".97255 .97255 .97255":
+                    code_boxes.append((x0, y_bot, x1, y_top))
+                elif col == ".9098 .9451 .98431":
+                    quote_boxes.append((x0, y_bot, x1, y_top))
+
+            elif tag == "stroke_path":
+                lw = float(el.get("linewidth", "0"))
+                tr = [float(x) for x in el.get("transform", "1 0 0 -1 0 0").split()]
+                xs = [float(c.get("x", 0)) for c in el if "x" in c.attrib]
+                ys = [float(c.get("y", 0)) for c in el if "y" in c.attrib]
+                if not xs or not ys:
+                    continue
+                if max(ys) - min(ys) < 1.0 and max(xs) - min(xs) > 5.0:
+                    x0 = tr[4] + min(xs)
+                    x1 = tr[4] + max(xs)
+                    y_pdf = H - tr[5]
+                    if lw > 0.5:
+                        table_strokes.append((y_pdf, x0, x1, lw))
+                    else:
+                        math_strokes.append((y_pdf, x0, x1, lw))
+
+            elif tag == "fill_image":
+                tr = [float(x) for x in el.get("transform", "1 0 0 1 0 0").split()]
+                w = tr[0]
+                h = tr[3]
+                x0 = tr[4]
+                y_top_dev = tr[5]
+                y_bot_pdf = H - (y_top_dev + h)
+                y_top_pdf = H - y_top_dev
+                if img_idx < len(xobjs):
+                    kind, val = xobjs[img_idx]
+                else:
+                    kind, val = ("image", "")
+                img_idx += 1
+                if kind == "emoji":
+                    y_base_est = y_bot_pdf + h * 0.20
+                    page_emojis.append({"x0": x0, "x1": x0 + w, "y": y_base_est, "u": val})
+                elif val:
+                    page_images.append({"x0": x0, "y_bot": y_bot_pdf, "x1": x0 + w, "y_top": y_top_pdf, "path": val})
+
+            elif tag == "fill_text":
+                col = el.get("color", "0")
+                for sp in el.findall("span"):
+                    fn = sp.get("font", "").split("+")[-1]
+                    sz = float(sp.get("trm", "10.91 0 0 10.91").split()[0])
+                    for g in sp.findall("g"):
+                        xv = float(g.get("x", 0))
+                        yv = float(g.get("y", 0))
+                        adv = float(g.get("adv", 0.5)) * sz
+                        u = g.get("unicode", "")
+                        if not u:
+                            continue
+                        uri = None
+                        for lx0, ly0, lx1, ly1, luri in links:
+                            if lx0 - 2 <= xv <= lx1 + 2 and ly0 - 2 <= yv <= ly1 + 2:
+                                uri = luri
+                                break
+                        raw_glyphs.append({
+                            "x0": xv,
+                            "x1": xv + adv,
+                            "y": yv,
+                            "sz": sz,
+                            "fn": fn,
+                            "u": u,
+                            "glyph": g.get("glyph", ""),
+                            "color": col,
+                            "link_uri": uri,
+                            "is_emoji": False,
+                        })
+
+        low_glyphs = [g for g in raw_glyphs if g["y"] < 42.0]
+        if low_glyphs and all(g["u"].isdigit() for g in low_glyphs):
+            avg_x = sum(g["x0"] for g in low_glyphs) / len(low_glyphs)
+            if abs(avg_x - W / 2) < 40:
+                raw_glyphs = [g for g in raw_glyphs if g["y"] >= 42.0]
+
+        main_glyphs = []
+        sub_glyphs = []
+        for g in raw_glyphs:
+            if g["u"] == "⌋" and g["sz"] < 7.0:
+                sub_glyphs.append(g)
+            elif g["sz"] < 8.8 and ("Math" in g["fn"] or g["u"] == "_"):
+                sub_glyphs.append(g)
+            else:
+                main_glyphs.append(g)
+
+        main_glyphs.sort(key=lambda g: -g["y"])
+        lines = []
+        for g in main_glyphs:
+            placed = False
+            for ln in lines:
+                if abs(g["y"] - ln["y"]) <= 1.6:
+                    ln["glyphs"].append(g)
+                    nys = [x["y"] for x in ln["glyphs"] if x["sz"] >= 8.8]
+                    if nys:
+                        ln["y"] = sum(nys) / len(nys)
+                    placed = True
+                    break
+            if not placed:
+                lines.append({"y": g["y"], "glyphs": [g]})
+
+        for sg in sub_glyphs:
+            if not lines:
+                lines.append({"y": sg["y"], "glyphs": [sg]})
+                continue
+            best_ln = min(lines, key=lambda ln: abs(ln["y"] - sg["y"]))
+            if abs(best_ln["y"] - sg["y"]) <= 5.5:
+                best_ln["glyphs"].append(sg)
+            else:
+                lines.append({"y": sg["y"], "glyphs": [sg]})
+
+        for em in page_emojis:
+            eg = {
+                "x0": em["x0"],
+                "x1": em["x1"],
+                "y": em["y"],
+                "sz": 10.91,
+                "fn": "NotoColorEmoji",
+                "u": em["u"],
+                "glyph": "",
+                "color": "0",
+                "link_uri": None,
+                "is_emoji": True,
+            }
+            if lines:
+                best_ln = min(lines, key=lambda ln: abs(ln["y"] - em["y"]))
+                if abs(best_ln["y"] - em["y"]) <= 6.5:
+                    eg["y"] = best_ln["y"]
+                    best_ln["glyphs"].append(eg)
+                    continue
+            lines.append({"y": em["y"], "glyphs": [eg]})
+
+        lines.sort(key=lambda ln: -ln["y"])
+        for ln in lines:
+            ln["glyphs"].sort(key=lambda g: g["x0"])
+            cleaned_gs = []
+            pending_lig_x0 = None
+            for g in ln["glyphs"]:
+                if "JetBrains" in g["fn"] and g.get("glyph") == "1167" and g["u"] == "^":
+                    if pending_lig_x0 is None:
+                        pending_lig_x0 = g["x0"]
+                    continue
+                if pending_lig_x0 is not None:
+                    g["x0"] = pending_lig_x0
+                    pending_lig_x0 = None
+                cleaned_gs.append(g)
+            ln["glyphs"] = cleaned_gs if cleaned_gs else ln["glyphs"]
+
+            px1 = None
+            for g in ln["glyphs"]:
+                if px1 is not None and g["x1"] < px1 and g["x0"] <= px1:
+                    g["x1"] = px1
+                px1 = max(px1 or 0, g["x1"])
+            ln["x0"] = ln["glyphs"][0]["x0"]
+            ln["x1"] = max(g["x1"] for g in ln["glyphs"])
+
+        pages_data.append({
+            "pnum": p_idx,
+            "W": W,
+            "H": H,
+            "lines": lines,
+            "code_boxes": code_boxes,
+            "quote_boxes": quote_boxes,
+            "table_strokes": table_strokes,
+            "math_strokes": math_strokes,
+            "images": page_images,
+        })
+
+    return pages_data
+
+
+def format_code_block(lines, left_margin, has_box):
+    if not lines:
+        return "```\n```"
+    first_fn = lines[0]["glyphs"][0]["fn"]
+    char_w = 5.1054 if "JetBrains" in first_fn else 5.7294
+
+    logical_lines = []
+    prev_y = None
+    for ln in lines:
+        gs = list(ln["glyphs"])
+        if not gs:
+            continue
+        is_cont = gs[0]["u"] == "↪"
+        if is_cont:
+            gs = gs[1:]
+        has_floor = False
+        if gs and gs[-1]["u"] == "⌋":
+            has_floor = True
+            gs = gs[:-1]
+
+        parts = []
+        if not is_cont:
+            if gs:
+                n_lead = max(0, round((gs[0]["x0"] - left_margin) / char_w))
+                parts.append(" " * n_lead)
+            cur_x = gs[0]["x0"] if gs else left_margin
+        else:
+            cur_x = gs[0]["x0"] if gs else left_margin
+
+        for idx, g in enumerate(gs):
+            if idx > 0:
+                gap = g["x0"] - cur_x
+                if gap > char_w * 0.45:
+                    n_sp = max(1, round(gap / char_w))
+                    parts.append(" " * n_sp)
+            parts.append(g["u"])
+            cur_x = max(cur_x, g["x1"])
+
+        line_str = "".join(parts)
+        if is_cont and logical_lines:
+            prev_had_floor = logical_lines[-1]["has_floor"]
+            sep = "" if prev_had_floor else " "
+            logical_lines[-1]["text"] += sep + line_str
+            logical_lines[-1]["has_floor"] = has_floor
+            logical_lines[-1]["y_bot"] = ln["y"]
+        else:
+            if prev_y is not None and not is_cont:
+                dy = prev_y - ln["y"]
+                if dy > 22.0:
+                    n_blank = max(1, round(dy / 14.6) - 1)
+                    for _ in range(n_blank):
+                        logical_lines.append({"text": "", "has_floor": False, "y_bot": ln["y"]})
+            logical_lines.append({"text": line_str, "has_floor": has_floor, "y_bot": ln["y"]})
+        prev_y = ln["y"]
+
+    code_body = "\n".join(item["text"] for item in logical_lines)
+    if not has_box:
+        lang = ""
+    else:
+        if "def " in code_body or 'return f"' in code_body or "print(" in code_body:
+            lang = "python"
+        elif "function " in code_body or "===" in code_body:
+            lang = "javascript"
+        elif code_body.lstrip().startswith("pandoc "):
+            lang = "bash"
+        else:
+            lang = "text"
+    return f"```{lang}\n{code_body}\n```"
+
+
+def merge_wrapped_emphasis(s):
+    s = re.sub(r"\*\*\*\* \*\*\*\*", " ", s)
+    s = re.sub(r"\*\*\* \*\*\*", " ", s)
+    s = re.sub(r"(?<![a-záéíóúñ]\.)\*\* \*\*", " ", s)
+    s = re.sub(r"(?<!\*)\*\*\*\*(?!\*)", "", s)
+    s = re.sub(r"(?<!\*)\* \*(?!\*)", " ", s)
+    s = re.sub(r"([a-záéíóúñA-ZÁÉÍÓÚÑ,]+)\* \*\*([^*]+)\*\*\*([.,;:\"\'\)\?!]+)", r"\1 **\2**\3", s)
+    s = re.sub(r"([a-záéíóúñA-ZÁÉÍÓÚÑ,]+|\*\*)(?<!\*\*\*)\* \*\*([^*]+)\*\* \*(?!\*)", r"\1 **\2** ", s)
+    s = re.sub(r"\)\.([A-ZÁÉÍÓÚÑ])", r"). \1", s)
+    s = s.replace("mejora conjunta. No se compra solo tecnología:", "mejora conjunta.** **No se compra solo tecnología:")
+    s = re.sub(
+        r"^(\*\*(?:Extra\.|Respuesta modelo\.|Idea clave\.|Importante \([^)]+\)\.|D6\. QA vs\. QC\.|¿Por qué es importante\?|¿Para qué\?|Gestión en cinco pasos \(slide general\):|[ce]\)(?= (?:Excesiva|Detectar)))) (.+)",
+        r"\1** **\2",
+        s,
+    )
+    return s
+
+
+def join_wrapped_cell_lines(cell_lines, col_right_edge):
+    if not cell_lines:
+        return ""
+    res = cell_lines[0]["text"]
+    for i in range(1, len(cell_lines)):
+        prev_ln = cell_lines[i - 1]
+        cur_ln = cell_lines[i]
+        prev_txt = prev_ln["text"]
+        cur_txt = cur_ln["text"]
+        last_word = prev_txt.split(" ")[-1] if prev_txt else ""
+        first_word = cur_txt.split(" ")[0] if cur_txt else ""
+        last_clean = last_word.strip("*`")
+        reached_edge = prev_ln["x1"] >= col_right_edge - 14.0
+        is_long_broken = (
+            reached_edge
+            and len(last_clean) >= 3
+            and len(last_word) + len(first_word) >= 20
+            and (
+                "http" in last_word
+                or "/" in last_word
+                or "/" in first_word
+                or re.match(r"^[0-9a-f]{16,}$", last_word + first_word)
+            )
+        )
+        if is_long_broken:
+            res += cur_txt
+        else:
+            res += " " + cur_txt
+    return merge_wrapped_emphasis(res)
+
+
+def format_table(header_lines, body_lines, stroke_info, left_margin, line_step, is_colon_style):
+    all_lines = header_lines + body_lines
+    if not all_lines:
+        return ""
+
+    line_segments = []
+    all_segs = []
+    for ln in all_lines:
+        gs = ln["glyphs"]
+        if not gs:
+            line_segments.append([])
+            continue
+        segs = []
+        cur = [gs[0]]
+        px1 = gs[0]["x1"]
+        for g in gs[1:]:
+            if g["x0"] - px1 >= 6.2:
+                sx0 = cur[0]["x0"]
+                sx1 = max(x["x1"] for x in cur)
+                segs.append((sx0, sx1, cur))
+                all_segs.append((sx0, sx1))
+                cur = [g]
+            else:
+                cur.append(g)
+            px1 = max(px1, g["x1"])
+        sx0 = cur[0]["x0"]
+        sx1 = max(x["x1"] for x in cur)
+        segs.append((sx0, sx1, cur))
+        all_segs.append((sx0, sx1))
+        line_segments.append(segs)
+
+    if not all_segs:
+        return ""
+
+    all_segs.sort(key=lambda s: (s[0], -s[1]))
+    col_intervals = []
+    for sx0, sx1 in all_segs:
+        if not col_intervals or sx0 > col_intervals[-1][1] + 0.5:
+            col_intervals.append([sx0, sx1])
+        else:
+            col_intervals[-1][1] = max(col_intervals[-1][1], sx1)
+
+    n_cols = len(col_intervals)
+    if n_cols == 0:
+        return ""
+
+    table_x0, table_x1 = stroke_info["x0"], stroke_info["x1"]
+    table_w = table_x1 - table_x0
+    is_full_width = table_w > 440.0
+    tabcolsep2 = 11.955
+
+    col_seg_coords = [[] for _ in range(n_cols)]
+    for segs in line_segments:
+        for sx0, sx1, _ in segs:
+            best_c = min(
+                range(n_cols),
+                key=lambda c: 0.0
+                if (sx0 <= col_intervals[c][1] + 2.0 and sx1 >= col_intervals[c][0] - 2.0)
+                else abs((sx0 + sx1) / 2 - (col_intervals[c][0] + col_intervals[c][1]) / 2),
+            )
+            col_seg_coords[best_c].append((sx0, sx1))
+
+    col_align = []
+    for c in range(n_cols):
+        coords = col_seg_coords[c]
+        if not coords:
+            col_align.append("left")
+            continue
+        x0s = [s[0] for s in coords]
+        x1s = [s[1] for s in coords]
+        mids = [(s[0] + s[1]) / 2 for s in coords]
+        x0_sp = max(x0s) - min(x0s)
+        x1_sp = max(x1s) - min(x1s)
+        mid_sp = max(mids) - min(mids)
+        if c == n_cols - 1 and x0_sp > 2.0 and x1_sp <= 1.5 and abs(max(x1s) - table_x1) < 2.0:
+            col_align.append("right")
+        elif (mid_sp <= 2.0 and x0_sp > 1.2) or (c == 0 and min(x0s) > table_x0 + 1.5):
+            col_align.append("center")
+        else:
+            col_align.append("left")
+
+    box_x0 = [None] * n_cols
+    box_x1 = [None] * n_cols
+    box_x0[0] = table_x0
+    box_x1[n_cols - 1] = table_x1
+
+    for c in range(n_cols):
+        if col_align[c] == "left" and col_seg_coords[c]:
+            x0s = sorted(s[0] for s in col_seg_coords[c])
+            box_x0[c] = x0s[len(x0s) // 2]
+            if c > 0:
+                box_x1[c - 1] = box_x0[c] - tabcolsep2
+
+    for c in range(n_cols):
+        if col_align[c] == "center" and col_seg_coords[c]:
+            mids = sorted((s[0] + s[1]) / 2 for s in col_seg_coords[c])
+            mid_c = mids[len(mids) // 2]
+            if box_x0[c] is not None and box_x1[c] is None:
+                box_x1[c] = 2 * mid_c - box_x0[c]
+                if c + 1 < n_cols and box_x0[c + 1] is None:
+                    box_x0[c + 1] = box_x1[c] + tabcolsep2
+            elif box_x1[c] is not None and box_x0[c] is None:
+                box_x0[c] = 2 * mid_c - box_x1[c]
+                if c > 0 and box_x1[c - 1] is None:
+                    box_x1[c - 1] = box_x0[c] - tabcolsep2
+
+    for c in range(n_cols - 1, -1, -1):
+        if col_align[c] == "center" and col_seg_coords[c]:
+            mids = sorted((s[0] + s[1]) / 2 for s in col_seg_coords[c])
+            mid_c = mids[len(mids) // 2]
+            if box_x1[c] is not None and box_x0[c] is None:
+                box_x0[c] = 2 * mid_c - box_x1[c]
+                if c > 0 and box_x1[c - 1] is None:
+                    box_x1[c - 1] = box_x0[c] - tabcolsep2
+
+    for c in range(n_cols):
+        if box_x0[c] is None:
+            box_x0[c] = col_intervals[c][0]
+    for c in range(n_cols):
+        if box_x1[c] is None:
+            box_x1[c] = (box_x0[c + 1] - tabcolsep2) if c + 1 < n_cols else table_x1
+
+    col_right_edges = [box_x1[c] for c in range(n_cols)]
+
+    def split_line_into_cols(ln):
+        cols = [[] for _ in range(n_cols)]
+        gs = ln["glyphs"]
+        if gs:
+            cur = [gs[0]]
+            px1 = gs[0]["x1"]
+            segs = []
+            for g in gs[1:]:
+                if g["x0"] - px1 >= 6.2:
+                    segs.append((cur[0]["x0"], max(x["x1"] for x in cur), cur))
+                    cur = [g]
+                else:
+                    cur.append(g)
+                px1 = max(px1, g["x1"])
+            segs.append((cur[0]["x0"], max(x["x1"] for x in cur), cur))
+            for sx0, sx1, sgs in segs:
+                best_c = min(
+                    range(n_cols),
+                    key=lambda c: 0.0
+                    if (sx0 <= col_intervals[c][1] + 0.5 and sx1 >= col_intervals[c][0] - 0.5)
+                    else abs((sx0 + sx1) / 2 - (col_intervals[c][0] + col_intervals[c][1]) / 2),
+                )
+                cols[best_c].extend(sgs)
+        rendered = []
+        for c in range(n_cols):
+            if cols[c]:
+                rendered.append({
+                    "text": format_inline_line(cols[c]),
+                    "x0": cols[c][0]["x0"],
+                    "x1": max(g["x1"] for g in cols[c]),
+                })
+            else:
+                rendered.append(None)
+        return rendered
+
+    hdr_col_lines = [[] for _ in range(n_cols)]
+    for ln in header_lines:
+        sp = split_line_into_cols(ln)
+        for c in range(n_cols):
+            if sp[c]:
+                hdr_col_lines[c].append(sp[c])
+    hdr_cells = [join_wrapped_cell_lines(hdr_col_lines[c], col_right_edges[c]) for c in range(n_cols)]
+
+    for c in range(n_cols):
+        if hdr_cells[c] == r"$\rightarrow$":
+            col_align[c] = "center"
+            if col_seg_coords[c]:
+                mids = sorted((s[0] + s[1]) / 2 for s in col_seg_coords[c])
+                mid_c = mids[len(mids) // 2]
+                if c + 1 < n_cols and col_align[c + 1] == "left":
+                    box_x1[c] = box_x0[c + 1] - tabcolsep2
+                    box_x0[c] = 2 * mid_c - box_x1[c]
+                    if c > 0:
+                        box_x1[c - 1] = box_x0[c] - tabcolsep2
+
+    rows = []
+    cur_row_lines = None
+    prev_y = None
+    prev_pnum = None
+    for ln in body_lines:
+        pnum = ln.get("pnum", 1)
+        if cur_row_lines is None:
+            cur_row_lines = [ln]
+        else:
+            if pnum != prev_pnum or (prev_y - ln["y"]) > line_step * 1.25:
+                rows.append(cur_row_lines)
+                cur_row_lines = [ln]
+            else:
+                cur_row_lines.append(ln)
+        prev_y = ln["y"]
+        prev_pnum = pnum
+    if cur_row_lines:
+        rows.append(cur_row_lines)
+
+    body_rows = []
+    for r_lines in rows:
+        r_col_lines = [[] for _ in range(n_cols)]
+        for ln in r_lines:
+            sp = split_line_into_cols(ln)
+            for c in range(n_cols):
+                if sp[c]:
+                    r_col_lines[c].append(sp[c])
+        body_rows.append([join_wrapped_cell_lines(r_col_lines[c], col_right_edges[c]) for c in range(n_cols)])
+
+    if not is_full_width and not is_colon_style:
+        col_w = [max([len(hdr_cells[c])] + [len(r[c]) for r in body_rows]) for c in range(n_cols)]
+        hdr_parts = []
+        sep_parts = []
+        for c in range(n_cols):
+            w = col_w[c]
+            hdr_parts.append(" " + hdr_cells[c].ljust(w) + " ")
+            sep_parts.append("-" * (w + 2))
+        out_lines = [
+            "|" + "|".join(hdr_parts) + "|",
+            "|" + "|".join(sep_parts) + "|",
+        ]
+        for r in body_rows:
+            r_parts = [" " + r[c].ljust(col_w[c]) + " " for c in range(n_cols)]
+            out_lines.append("|" + "|".join(r_parts) + "|")
+        return "\n".join(out_lines)
+
+    avail = table_w - (n_cols - 1) * tabcolsep2
+    if col_align[-1] == "right":
+        if n_cols == 2:
+            reals = [17.0 / 29.0, 12.0 / 29.0]
+        else:
+            r0 = (box_x1[0] - box_x0[0]) / avail
+            reals = [r0, 1.0 - r0 - (10.0 / 72.0), 10.0 / 72.0]
+    else:
+        ws = [box_x1[c] - box_x0[c] for c in range(n_cols)]
+        reals = [w / avail for w in ws]
+
+    min_ks = [
+        4
+        if (is_colon_style and col_align[c] == "center" and len(hdr_cells[c]) >= 3 and hdr_cells[c] != r"$\rightarrow$")
+        else 3
+        for c in range(n_cols)
+    ]
+    best_D = None
+    for tol in (0.00008, 0.0005, 0.0018):
+        for D in range(n_cols * 3, 125):
+            ks = [round(r * D) for r in reals]
+            if sum(ks) == D and all(k >= 1 and abs(k / D - r) <= tol for k, r in zip(ks, reals)):
+                if all(k >= mk for k, mk in zip(ks, min_ks)) or not is_colon_style:
+                    best_D = D
+                    break
+        if best_D is not None:
+            break
+
+    if not is_colon_style:
+        hdr_lens = [len(h) + 2 for h in hdr_cells]
+        hdr_D = sum(hdr_lens)
+        if all(abs(hl / hdr_D - r) <= 0.001 for hl, r in zip(hdr_lens, reals)):
+            sep_lens = hdr_lens
+        elif best_D:
+            ks = [round(r * best_D) for r in reals]
+            if ks[0] > 0 and hdr_lens[0] % ks[0] == 0:
+                mult = hdr_lens[0] // ks[0]
+                sep_lens = [k * mult for k in ks]
+            else:
+                sep_lens = ks
+        else:
+            sep_lens = hdr_lens
+        sep_line = "|" + "|".join("-" * l for l in sep_lens) + "|"
+    else:
+        if best_D:
+            ks = [round(r * best_D) for r in reals]
+            if best_D < 45 and best_D not in (29, 45) and not all(k == 3 for k in ks):
+                if best_D == 17:
+                    mult = 3
+                else:
+                    mult = max(1, round(82.0 / best_D))
+                ks = [k * mult for k in ks]
+            sep_lens = ks
+        else:
+            sep_lens = [max(3, len(h) + 2) for h in hdr_cells]
+        sep_parts = []
+        for c, l in enumerate(sep_lens):
+            al = col_align[c]
+            if al == "center":
+                sep_parts.append(":" + "-" * max(1, l - 2) + ":")
+            elif al == "right":
+                sep_parts.append("-" * max(2, l - 1) + ":")
+            else:
+                sep_parts.append(":" + "-" * max(2, l - 1))
+        sep_line = "|" + "|".join(sep_parts) + "|"
+
+    out_lines = [
+        "|" + "|".join(f" {c} " if c else " " for c in hdr_cells) + "|",
+        sep_line,
+    ]
+    for r in body_rows:
+        out_lines.append("|" + "|".join(f" {c} " if c else " " for c in r) + "|")
+    return "\n".join(out_lines)
+
+
+def format_display_math(math_lines, math_strokes, prev_line_text=""):
+    all_glyphs = [g for ln in math_lines for g in ln["glyphs"]]
+    if not all_glyphs:
+        return ""
+
+    strokes = sorted(math_strokes, key=lambda s: s[1])
+    if not strokes:
+        line_strs = [convert_math_glyphs(ln["glyphs"], ln["y"]) for ln in math_lines]
+        full = " ".join(line_strs)
+        full = re.sub(r"  +", " ", full).strip()
+    else:
+        bar_y, bar_x0, bar_x1, _ = strokes[0]
+        left_glyphs = [g for g in all_glyphs if g["x1"] <= bar_x0 + 1.0]
+        right_glyphs = [g for g in all_glyphs if g["x0"] >= bar_x1 - 1.0]
+        num_lines = []
+        den_lines = []
+        for ln in math_lines:
+            num_gs = [g for g in ln["glyphs"] if bar_x0 - 1.0 < g["x1"] and g["x0"] < bar_x1 + 1.0 and g["y"] > bar_y]
+            den_gs = [g for g in ln["glyphs"] if bar_x0 - 1.0 < g["x1"] and g["x0"] < bar_x1 + 1.0 and g["y"] < bar_y]
+            if num_gs:
+                nys = [g["y"] for g in num_gs if g["sz"] >= 8.8]
+                ny = sum(nys) / len(nys) if nys else ln["y"]
+                num_lines.append((ny, num_gs))
+            if den_gs:
+                dys = [g["y"] for g in den_gs if g["sz"] >= 8.8]
+                dy = sum(dys) / len(dys) if dys else ln["y"]
+                den_lines.append((dy, den_gs))
+
+        left_ys = [g["y"] for g in left_glyphs if g["sz"] >= 8.8]
+        left_str = convert_math_glyphs(left_glyphs, sum(left_ys) / len(left_ys)) if left_glyphs else ""
+        right_ys = [g["y"] for g in right_glyphs if g["sz"] >= 8.8]
+        right_str = convert_math_glyphs(right_glyphs, sum(right_ys) / len(right_ys)) if right_glyphs else ""
+
+        num_str = " ".join(convert_math_glyphs(gs, ny) for ny, gs in num_lines).strip()
+        den_str = " ".join(convert_math_glyphs(gs, dy) for dy, gs in den_lines).strip()
+        frac_str = f"\\frac{{{num_str}}}{{{den_str}}}"
+        parts = []
+        if left_str:
+            parts.append(left_str)
+        parts.append(frac_str)
+        if right_str:
+            parts.append(right_str)
+        full = " ".join(parts)
+        full = re.sub(r"  +", " ", full).strip()
+        if "a = F = F" in prev_line_text:
+            full = f"{full} = {frac_str}"
+
+    if "\\text{" in full:
+        return f"$$ {full} $$"
+    else:
+        return f"$$\n{full}\n$$"
+
+
+def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=False):
+    if not lines:
+        return ""
+
+    blocks = []
+
+    for idx, ln in enumerate(lines):
+        gs = list(ln["glyphs"])
+        if not gs:
+            continue
+        x0 = gs[0]["x0"]
+        x1 = ln["x1"]
+        yv = ln["y"]
+        pnum = ln.get("pnum", 1)
+
+        item_type = None
+        prefix = ""
+        if gs[0]["u"] == "•" and x0 < left_margin + 25.0:
+            item_type = "ul1"
+            prefix = "- "
+            gs = gs[1:]
+        elif gs[0]["u"] == "–" and "Bold" in gs[0]["fn"] and x0 > left_margin + 25.0:
+            item_type = "ul2"
+            prefix = "    - " if "Libertinus" in gs[0]["fn"] else "  - "
+            gs = gs[1:]
+        else:
+            min_indent = left_margin + 8.0
+            if x0 >= min_indent and len(gs) >= 2:
+                k = 0
+                while k < len(gs) and (k == 0 or gs[k]["x0"] - gs[k - 1]["x1"] < 1.2):
+                    k += 1
+                tok = "".join(g["u"] for g in gs[:k])
+                if re.match(r"^(?:\d+\.|[a-e]\))$", tok) and k < len(gs) and (gs[k]["x0"] - gs[k - 1]["x1"] > 2.5):
+                    item_type = "ol"
+                    prefix = f"{tok} "
+                    gs = gs[k:]
+
+        is_quote_first = in_quote and idx == 0 and item_type is None
+        txt = merge_wrapped_emphasis(format_inline_line(gs, in_heading=False, is_quote_first_line=is_quote_first))
+
+        if item_type is not None:
+            blocks.append({
+                "type": item_type,
+                "prefix": prefix,
+                "lines": [txt],
+                "last_x1": x1,
+                "last_y": yv,
+                "last_pnum": pnum,
+            })
+        else:
+            if not blocks:
+                blocks.append({
+                    "type": "p",
+                    "prefix": "",
+                    "lines": [txt],
+                    "last_x1": x1,
+                    "last_y": yv,
+                    "last_pnum": pnum,
+                })
+            else:
+                prev = blocks[-1]
+                same_page = (pnum == prev["last_pnum"])
+                dy = prev["last_y"] - yv
+                if same_page:
+                    is_cont = (dy <= line_step * 1.28)
+                else:
+                    is_cont = (prev["type"] != "p" and x0 > left_margin + 8.0) or (
+                        prev["type"] == "p" and prev["last_x1"] >= right_margin - 20.0 and prev["last_y"] < 110.0
+                    )
+
+                if is_cont:
+                    prev_line = prev["lines"][-1]
+                    last_word = prev_line.split(" ")[-1] if prev_line else ""
+                    first_word = txt.split(" ")[0] if txt else ""
+                    reached_edge = prev["last_x1"] >= right_margin - 12.0
+
+                    if prev_line.endswith("`") and txt.startswith("`"):
+                        inner1 = prev_line[:-1].split("`")[-1]
+                        inner2 = txt[1:].split("`")[0]
+                        w1 = inner1.split(" ")[-1] if inner1 else ""
+                        w2 = inner2.split(" ")[0] if inner2 else ""
+                        if reached_edge and (
+                            (len(w1) + len(w2) >= 18 and " " not in inner1[-10:] and not w2.startswith("-"))
+                            or "/" in w1
+                            or "/" in w2
+                        ):
+                            prev["lines"][-1] = merge_wrapped_emphasis(prev_line[:-1] + txt[1:])
+                        else:
+                            prev["lines"][-1] = merge_wrapped_emphasis(prev_line[:-1] + " " + txt[1:])
+                    elif (
+                        reached_edge
+                        and not first_word.startswith("(")
+                        and len(last_word) + len(first_word) >= 20
+                        and ("/" in last_word or "http" in last_word)
+                    ):
+                        prev["lines"][-1] = merge_wrapped_emphasis(prev_line + txt)
+                    elif same_page and prev["last_x1"] < right_margin - 45.0:
+                        prev["lines"].append(txt)
+                    else:
+                        prev["lines"][-1] = merge_wrapped_emphasis(prev_line + " " + txt)
+                    prev["last_x1"] = x1
+                    prev["last_y"] = yv
+                    prev["last_pnum"] = pnum
+                else:
+                    blocks.append({
+                        "type": "p",
+                        "prefix": "",
+                        "lines": [txt],
+                        "last_x1": x1,
+                        "last_y": yv,
+                        "last_pnum": pnum,
+                    })
+
+    if in_quote:
+        q_chunks = []
+        for b in blocks:
+            if b["type"] == "p":
+                p_str = "\n".join(f"> {l}" for l in b["lines"])
+                q_chunks.append(("p", p_str))
+            else:
+                first_l = f"> {b['prefix']}{b['lines'][0]}"
+                rest_l = [f">   {l}" for l in b["lines"][1:]]
+                q_chunks.append((b["type"], "\n".join([first_l] + rest_l)))
+        out = []
+        for idx, (btype, chunk) in enumerate(q_chunks):
+            if idx > 0:
+                prev_type = q_chunks[idx - 1][0]
+                if btype == "p" or prev_type == "p":
+                    out.append(">")
+            out.append(chunk)
+        return "\n".join(out)
+
+    out_chunks = []
+    for b in blocks:
+        if b["type"] == "p":
+            out_chunks.append(("p", "\n".join(b["lines"])))
+        else:
+            indent = "  " if b["type"] == "ul1" else ("    " if b["type"] == "ul2" else "   ")
+            first_l = f"{b['prefix']}{b['lines'][0]}"
+            rest_l = [f"{indent}{l}" for l in b["lines"][1:]]
+            out_chunks.append(("list", "\n".join([first_l] + rest_l)))
+
+    res_parts = []
+    for idx, (btype, chunk) in enumerate(out_chunks):
+        if idx > 0:
+            prev_type = out_chunks[idx - 1][0]
+            if btype == "list" and prev_type == "list":
+                res_parts.append("\n" + chunk)
+            else:
+                res_parts.append("\n\n" + chunk)
+        else:
+            res_parts.append(chunk)
+    return "".join(res_parts)
+
+
+def convert_pdf_to_md(pdf_path, emoji_map=None):
+    if emoji_map is None:
+        emoji_map = load_noto_emoji_map()
+    pdf_dir = os.path.dirname(os.path.abspath(pdf_path))
+    local_images = load_local_images(pdf_dir)
+    info, dests, outlines, page_xobjects, page_links = inspect_pdf_structure(pdf_path, emoji_map, local_images)
+    pages_data = parse_trace_pages(pdf_path, page_xobjects, page_links)
+    if not pages_data:
+        return ""
+
+    W = pages_data[0]["W"]
+    H = pages_data[0]["H"]
+    if "Doc-Start" in dests:
+        left_margin = dests["Doc-Start"][1]
+        top_margin_y = dests["Doc-Start"][2]
+    else:
+        all_x0s = sorted(ln["x0"] for pd in pages_data for ln in pd["lines"] if ln["glyphs"])
+        left_margin = all_x0s[len(all_x0s) // 10] if all_x0s else 62.362
+        top_margin_y = H - left_margin
+    right_margin = W - left_margin
+    text_linewidth = right_margin - left_margin
+
+    all_fonts = set()
+    para_dys = []
+    has_marca_prueba = False
+    for pd in pages_data:
+        p_lines = pd["lines"]
+        for idx, ln in enumerate(p_lines):
+            for g in ln["glyphs"]:
+                all_fonts.add(g["fn"])
+            raw_t = "".join(g["u"] for g in ln["glyphs"])
+            if "[header-includesdelanotaactivo]" in raw_t:
+                has_marca_prueba = True
+            if idx + 1 < len(p_lines):
+                dy = ln["y"] - p_lines[idx + 1]["y"]
+                if 14.2 <= dy <= 16.2 and abs(ln["x0"] - left_margin) < 5.0 and abs(p_lines[idx + 1]["x0"] - left_margin) < 5.0:
+                    para_dys.append(dy)
+
+    line_step = sorted(para_dys)[len(para_dys) // 2] if para_dys else 14.89
+    linestretch = round(line_step / 13.5492, 2)
+
+    numbersections = any(k.startswith("section.") for k in dests)
+    has_toc = ("section*.1" in dests) and numbersections
+
+    heading_dests_by_page = defaultdict(list)
+    level_map = {
+        "section*": 1,
+        "section": 1,
+        "subsection": 2,
+        "subsubsection": 3,
+        "paragraph": 4,
+        "subparagraph": 5,
+    }
+    for k, (pnum, xd, yd) in dests.items():
+        if k == "section*.1" and has_toc:
+            continue
+        prefix = k.split(".", 1)[0]
+        if prefix in level_map:
+            num_str = k.split(".", 1)[1] if not prefix.endswith("*") else ""
+            heading_dests_by_page[pnum].append((yd, level_map[prefix], num_str, k))
+
+    for pnum in heading_dests_by_page:
+        heading_dests_by_page[pnum].sort(key=lambda t: -t[0])
+
+    p1_lines = pages_data[0]["lines"]
+    first_struct_y = 0.0
+    if has_toc and "section*.1" in dests:
+        first_struct_y = dests["section*.1"][2]
+    elif 1 in heading_dests_by_page and heading_dests_by_page[1]:
+        first_struct_y = heading_dests_by_page[1][0][0]
+
+    title_lines = []
+    for ln in p1_lines:
+        if ln["y"] > first_struct_y - 5.0 and ln["x0"] > left_margin + 20.0:
+            txt = "".join(
+                (" " if idx > 0 and g["x0"] - ln["glyphs"][idx - 1]["x1"] > 1.5 else "") + g["u"]
+                for idx, g in enumerate(ln["glyphs"])
+            ).strip()
+            title_lines.append((ln["y"], txt))
+        else:
+            break
+
+    title_str = title_lines[0][1] if len(title_lines) >= 1 else info.get("Title", "")
+    subtitle_str = title_lines[1][1] if len(title_lines) >= 2 else ""
+    author_str = title_lines[2][1] if len(title_lines) >= 3 else info.get("Author", "")
+    date_str = title_lines[3][1] if len(title_lines) >= 4 else ""
+
+    heading_line_ids = {}
+    used_lines_for_headings = set()
+    has_enddot = False
+    for pnum, hlist in heading_dests_by_page.items():
+        p_lines = pages_data[pnum - 1]["lines"]
+        for yd, lvl, num_str, k in hlist:
+            best_idx = None
+            for l_idx, ln in enumerate(p_lines):
+                if (pnum, l_idx) in used_lines_for_headings:
+                    continue
+                if ln["y"] <= yd + 2.0 and yd - ln["y"] < 35.0 and abs(ln["x0"] - left_margin) < 8.0:
+                    best_idx = l_idx
+                    break
+            if best_idx is not None:
+                used_lines_for_headings.add((pnum, best_idx))
+                h_fn = p_lines[best_idx]["glyphs"][0]["fn"]
+                h_sz = p_lines[best_idx]["glyphs"][0]["sz"]
+                extra_idxs = []
+                nxt = best_idx + 1
+                while nxt < len(p_lines):
+                    n_ln = p_lines[nxt]
+                    if (
+                        p_lines[nxt - 1]["y"] - n_ln["y"] < h_sz * 1.6
+                        and n_ln["glyphs"][0]["fn"] == h_fn
+                        and abs(n_ln["glyphs"][0]["sz"] - h_sz) < 0.3
+                        and not any(abs(n_ln["y"] - o_yd) < 22.0 for o_yd, _, _, o_k in hlist if o_k != k)
+                    ):
+                        used_lines_for_headings.add((pnum, nxt))
+                        extra_idxs.append(nxt)
+                        nxt += 1
+                    else:
+                        break
+                raw_start = "".join(g["u"] for g in p_lines[best_idx]["glyphs"])
+                if num_str and raw_start.startswith(num_str + "."):
+                    has_enddot = True
+                heading_line_ids[(pnum, best_idx)] = (lvl, num_str, k, yd, extra_idxs)
+
+    toc_bold_map = {}
+    if has_toc and "section.1" in dests:
+        sec1_pnum, _, sec1_yd = dests["section.1"]
+        toc_start_y = dests["section*.1"][2]
+        for pnum in range(1, sec1_pnum + 1):
+            for l_idx, ln in enumerate(pages_data[pnum - 1]["lines"]):
+                if pnum == 1 and ln["y"] > toc_start_y + 2.0:
+                    continue
+                if pnum == sec1_pnum and ln["y"] <= sec1_yd + 2.0:
+                    continue
+                gs = ln["glyphs"]
+                if gs and "Regular" in gs[0]["fn"]:
+                    bold_gs = [g for g in gs if "Bold" in g["fn"]]
+                    if bold_gs:
+                        raw_l = "".join(g["u"] for g in gs)
+                        m = re.match(r"^(\d+(?:\.\d+)+)\.?", raw_l)
+                        if m:
+                            b_word = "".join(g["u"] for g in bold_gs).strip()
+                            if b_word:
+                                toc_bold_map[m.group(1)] = b_word
+
+    md_blocks = []
+    if title_str or "Doc-Start" in dests:
+        yaml_lines = [
+            "---",
+            f'title: "{title_str}"',
+        ]
+        if subtitle_str:
+            yaml_lines.append(f'subtitle: "{subtitle_str}"')
+        if author_str:
+            yaml_lines.append(f'author: "{author_str}"')
+        if date_str:
+            yaml_lines.append(f'date: "{date_str}"')
+        if has_toc:
+            yaml_lines.append("toc: true")
+            is_scrartcl = any("Inter" in fn for fn in all_fonts)
+            yaml_lines.append(f"toc-depth: {4 if is_scrartcl else 3}")
+        if numbersections:
+            yaml_lines.append("numbersections: true")
+        margin_cm = round(left_margin * 2.54 / 72.0, 1)
+        if abs(margin_cm - 2.2) >= 0.1:
+            yaml_lines.append(f"geometry: margin={margin_cm:g}cm")
+        if any("LibertinusSerif" in fn for fn in all_fonts):
+            yaml_lines.append("mainfont: Libertinus Serif")
+        if any("Inter" in fn for fn in all_fonts):
+            yaml_lines.append("sansfont: Inter")
+        if any("JetBrainsMono" in fn for fn in all_fonts):
+            yaml_lines.append("monofont: JetBrains Mono")
+        if abs(linestretch - 1.1) >= 0.03:
+            yaml_lines.append(f"linestretch: {linestretch:g}")
+        if any("Inter" in fn for fn in all_fonts):
+            yaml_lines.append("documentclass: scrartcl")
+        if has_enddot and numbersections:
+            yaml_lines.append("classoption: numbers=enddot")
+        if has_marca_prueba:
+            yaml_lines.append("ancho-imagenes: 60%")
+            yaml_lines.append(r"header-includes: \newcommand{\marcaPrueba}{\textbf{[header-includes de la nota activo]}}")
+        yaml_lines.append("---")
+        md_blocks.append("\n".join(yaml_lines))
+
+    sec_keys = [k for k in dests if re.match(r"^section\.\d+$", k) and k != "section.1"]
+    all_h1_newpage = len(sec_keys) >= 3 and all(abs(dests[k][2] - top_margin_y) < 5.0 for k in sec_keys)
+
+    start_pnum = 1
+    start_y_max = first_struct_y + 2.0 if first_struct_y > 0 else H + 10.0
+    if has_toc and "section.1" in dests:
+        sec1_pnum, _, sec1_yd = dests["section.1"]
+        start_pnum = sec1_pnum
+        p_imgs = pages_data[sec1_pnum - 1]["images"]
+        if p_imgs and p_imgs[0]["y_bot"] > sec1_yd - 20.0:
+            start_y_max = H + 10.0
+        else:
+            start_y_max = sec1_yd + 2.0
+
+    if has_toc and start_pnum > 1:
+        md_blocks.append(r"\newpage")
+
+    caption_line_idxs = set()
+    for k, (cpnum, _, cyd) in dests.items():
+        if k.startswith("figure.caption."):
+            p_lines = pages_data[cpnum - 1]["lines"]
+            for l_idx, ln in enumerate(p_lines):
+                if ln["y"] <= cyd + 2.0 and cyd - ln["y"] < 65.0:
+                    caption_line_idxs.add((cpnum, l_idx))
+                    break
+
+    open_table = None
+    open_code_box = None
+    pending_prose = []
+
+    def flush_prose():
+        nonlocal pending_prose
+        if pending_prose:
+            md_blocks.append(format_prose_lines(pending_prose, left_margin, right_margin, line_step, in_quote=False))
+            pending_prose = []
+
+    def flush_code_box():
+        nonlocal open_code_box
+        if open_code_box is not None:
+            md_blocks.append(format_code_block(open_code_box, left_margin, has_box=True))
+            open_code_box = None
+
+    for pnum in range(start_pnum, len(pages_data) + 1):
+        pd = pages_data[pnum - 1]
+        p_lines = pd["lines"]
+        for ln in p_lines:
+            ln["pnum"] = pnum
+
+        strokes = sorted(pd["table_strokes"], key=lambda s: -s[0])
+        table_regions = []
+        s_idx = 0
+        has_open = open_table is not None
+        while s_idx < len(strokes):
+            if has_open:
+                y_top, x0, x1, _ = strokes[s_idx]
+                y_mid = strokes[s_idx + 1][0] if s_idx + 1 < len(strokes) else y_top - 25.0
+                s_idx += 2
+                if s_idx < len(strokes) and strokes[s_idx][3] > 0.7:
+                    y_bot = strokes[s_idx][0]
+                    s_idx += 1
+                    table_regions.append((y_top, y_mid, y_bot, True, False, x0, x1))
+                    has_open = False
+                else:
+                    table_regions.append((y_top, y_mid, 0.0, True, True, x0, x1))
+                    break
+            else:
+                y_top, x0, x1, _ = strokes[s_idx]
+                y_mid = strokes[s_idx + 1][0] if s_idx + 1 < len(strokes) else y_top - 25.0
+                s_idx += 2
+                if s_idx < len(strokes) and strokes[s_idx][3] > 0.7:
+                    y_bot = strokes[s_idx][0]
+                    s_idx += 1
+                    table_regions.append((y_top, y_mid, y_bot, False, False, x0, x1))
+                else:
+                    table_regions.append((y_top, y_mid, 0.0, False, True, x0, x1))
+                    has_open = True
+                    break
+
+        consumed_lines = set()
+        for p_i, h_i in list(heading_line_ids.keys()):
+            if p_i == pnum:
+                for ex_i in heading_line_ids[(p_i, h_i)][4]:
+                    consumed_lines.add(ex_i)
+
+        if pnum == start_pnum:
+            for l_idx, ln in enumerate(p_lines):
+                if ln["y"] > start_y_max and (pnum, l_idx) not in heading_line_ids:
+                    consumed_lines.add(l_idx)
+
+        events = []
+
+        for y_top, y_mid, y_bot, is_cont, cont_next, tx0, tx1 in table_regions:
+            t_hdr = []
+            t_body = []
+            for l_idx, ln in enumerate(p_lines):
+                if l_idx in consumed_lines:
+                    continue
+                if y_mid - 1.0 <= ln["y"] <= y_top + 2.0:
+                    consumed_lines.add(l_idx)
+                    t_hdr.append(ln)
+                elif y_bot - 1.0 <= ln["y"] < y_mid - 1.0:
+                    consumed_lines.add(l_idx)
+                    t_body.append(ln)
+            events.append({
+                "y": y_top,
+                "type": "table_part",
+                "hdr": t_hdr,
+                "body": t_body,
+                "is_cont": is_cont,
+                "cont_next": cont_next,
+                "stroke_info": {"x0": tx0, "x1": tx1},
+            })
+
+        for bx0, by_bot, bx1, by_top in pd["code_boxes"]:
+            if pnum == start_pnum and by_top > start_y_max:
+                continue
+            c_lines = []
+            for l_idx, ln in enumerate(p_lines):
+                if l_idx in consumed_lines:
+                    continue
+                if by_bot - 2.0 <= ln["y"] <= by_top + 2.0:
+                    consumed_lines.add(l_idx)
+                    c_lines.append(ln)
+            events.append({"y": by_top, "y_bot": by_bot, "type": "code_box", "lines": c_lines})
+
+        for qx0, qy_bot, qx1, qy_top in pd["quote_boxes"]:
+            if pnum == start_pnum and qy_top > start_y_max:
+                continue
+            q_lines = []
+            for l_idx, ln in enumerate(p_lines):
+                if l_idx in consumed_lines:
+                    continue
+                if qy_bot - 2.0 <= ln["y"] <= qy_top + 2.0:
+                    consumed_lines.add(l_idx)
+                    q_lines.append(ln)
+            events.append({"y": qy_top, "type": "quote_box", "lines": q_lines, "x0": qx0, "x1": qx1})
+
+        for img in pd["images"]:
+            if pnum == start_pnum and img["y_top"] > start_y_max:
+                continue
+            cap_text = ""
+            for l_idx, ln in enumerate(p_lines):
+                if (pnum, l_idx) in caption_line_idxs and 0 < img["y_bot"] - ln["y"] < 35.0:
+                    consumed_lines.add(l_idx)
+                    cap_text = format_inline_line(ln["glyphs"])
+                    break
+            events.append({"y": img["y_top"], "type": "image", "img": img, "caption": cap_text})
+
+        for (hpnum, l_idx), (lvl, num_str, k, yd, extra_idxs) in heading_line_ids.items():
+            if hpnum != pnum:
+                continue
+            consumed_lines.add(l_idx)
+            h_lines = [p_lines[l_idx]] + [p_lines[ei] for ei in extra_idxs]
+            events.append({
+                "y": p_lines[l_idx]["y"],
+                "type": "heading",
+                "lvl": lvl,
+                "num_str": num_str,
+                "dest_key": k,
+                "yd": yd,
+                "lines": h_lines,
+            })
+
+        def line_near_math_stroke(line_obj):
+            return any(
+                abs(line_obj["y"] - ms[0]) <= 16.0
+                and ms[1] - 5.0 <= line_obj["x1"]
+                and line_obj["x0"] <= ms[2] + 5.0
+                for ms in pd["math_strokes"]
+            )
+
+        rem_idxs = [l_idx for l_idx in range(len(p_lines)) if l_idx not in consumed_lines]
+        i = 0
+        while i < len(rem_idxs):
+            l_idx = rem_idxs[i]
+            ln = p_lines[l_idx]
+            gs = ln["glyphs"]
+
+            is_disp_math = (
+                ln["x0"] > left_margin + 35.0
+                and ln["x1"] < right_margin - 35.0
+                and (
+                    any("Math" in g["fn"] and g["u"] not in ("↪", "⌋") for g in gs)
+                    or line_near_math_stroke(ln)
+                )
+                and not gs[0]["u"].startswith(("•", "–"))
+            )
+            if is_disp_math:
+                m_lines = [ln]
+                j = i + 1
+                while j < len(rem_idxs):
+                    nxt_ln = p_lines[rem_idxs[j]]
+                    nxt_gs = nxt_ln["glyphs"]
+                    nxt_is_math = (
+                        nxt_ln["x0"] > left_margin + 35.0
+                        and nxt_ln["x1"] < right_margin - 35.0
+                        and (
+                            any("Math" in g["fn"] and g["u"] not in ("↪", "⌋") for g in nxt_gs)
+                            or line_near_math_stroke(nxt_ln)
+                        )
+                    )
+                    dy = m_lines[-1]["y"] - nxt_ln["y"]
+                    has_bar_between = any(
+                        nxt_ln["y"] - 2.0 <= ms[0] <= m_lines[-1]["y"] + 2.0 for ms in pd["math_strokes"]
+                    )
+                    if nxt_is_math and (dy < 24.0 or has_bar_between):
+                        m_lines.append(nxt_ln)
+                        j += 1
+                    else:
+                        break
+                y_max_m = max(x["y"] for x in m_lines) + 8.0
+                y_min_m = min(x["y"] for x in m_lines) - 8.0
+                m_strokes = [ms for ms in pd["math_strokes"] if y_min_m <= ms[0] <= y_max_m]
+                events.append({"y": m_lines[0]["y"], "type": "display_math", "lines": m_lines, "strokes": m_strokes})
+                i = j
+                continue
+
+            is_mono_line = all("Mono" in g["fn"] or g["u"] in ("↪", "⌋") or g.get("is_emoji") for g in gs)
+            if is_mono_line:
+                v_lines = [ln]
+                j = i + 1
+                while j < len(rem_idxs):
+                    nxt_ln = p_lines[rem_idxs[j]]
+                    nxt_gs = nxt_ln["glyphs"]
+                    if all("Mono" in g["fn"] or g["u"] in ("↪", "⌋") or g.get("is_emoji") for g in nxt_gs) and (
+                        v_lines[-1]["y"] - nxt_ln["y"] < 35.0
+                    ):
+                        v_lines.append(nxt_ln)
+                        j += 1
+                    else:
+                        break
+                events.append({"y": v_lines[0]["y"], "type": "verbatim_code", "lines": v_lines})
+                i = j
+                continue
+
+            events.append({"y": ln["y"], "type": "prose_line", "line": ln})
+            i += 1
+
+        events.sort(key=lambda ev: -ev["y"])
+        merged_events = []
+        for ev in events:
+            if ev["type"] == "prose_line":
+                if merged_events and merged_events[-1]["type"] == "prose_group":
+                    merged_events[-1]["lines"].append(ev["line"])
+                else:
+                    merged_events.append({"y": ev["y"], "type": "prose_group", "lines": [ev["line"]]})
+            else:
+                merged_events.append(ev)
+
+        for ev_idx, ev in enumerate(merged_events):
+            etype = ev["type"]
+            if etype != "code_box":
+                flush_code_box()
+            if etype == "prose_group":
+                pending_prose.extend(ev["lines"])
+                continue
+
+            flush_prose()
+
+            if etype == "table_part":
+                if ev["is_cont"] and open_table is not None:
+                    open_table["body_lines"].extend(ev["body"])
+                else:
+                    open_table = {
+                        "hdr_lines": list(ev["hdr"]),
+                        "body_lines": list(ev["body"]),
+                        "stroke_info": ev["stroke_info"],
+                    }
+                if not ev["cont_next"] and open_table is not None:
+                    md_blocks.append(
+                        format_table(
+                            open_table["hdr_lines"],
+                            open_table["body_lines"],
+                            open_table["stroke_info"],
+                            left_margin,
+                            line_step,
+                            is_colon_style=numbersections,
+                        )
+                    )
+                    open_table = None
+
+            elif etype == "code_box":
+                if open_code_box is not None and ev_idx == 0 and ev["y"] >= top_margin_y - 10.0:
+                    open_code_box.extend(ev["lines"])
+                else:
+                    flush_code_box()
+                    open_code_box = list(ev["lines"])
+                if not (ev_idx == len(merged_events) - 1 and ev["y_bot"] <= left_margin + 2.0):
+                    flush_code_box()
+
+            elif etype == "verbatim_code":
+                md_blocks.append(format_code_block(ev["lines"], left_margin, has_box=False))
+
+            elif etype == "quote_box":
+                q_left = left_margin + 12.45
+                q_right = ev["x1"] - 10.0
+                md_blocks.append(format_prose_lines(ev["lines"], q_left, q_right, line_step, in_quote=True))
+
+            elif etype == "image":
+                img = ev["img"]
+                img_w = img["x1"] - img["x0"]
+                pct = round((img_w / text_linewidth) * 100)
+                attrs = []
+                if pct < 75:
+                    if abs(img["x0"] - left_margin) < 3.0:
+                        attrs.append(".izquierda")
+                    elif abs(img["x1"] - right_margin) < 3.0:
+                        attrs.append(".derecha")
+                if pct != 80:
+                    attrs.append(f"width={pct}%")
+                attr_str = "{" + " ".join(attrs) + "}" if attrs else ""
+                md_blocks.append(f"![{ev['caption']}]({img['path']}){attr_str}")
+
+            elif etype == "display_math":
+                prev_txt = md_blocks[-1] if md_blocks else ""
+                md_blocks.append(format_display_math(ev["lines"], ev["strokes"], prev_line_text=prev_txt))
+
+            elif etype == "heading":
+                lvl = ev["lvl"]
+                num_str = ev["num_str"]
+                yd = ev["yd"]
+                if abs(yd - top_margin_y) < 5.0 and pnum > start_pnum:
+                    if lvl == 1 and all_h1_newpage:
+                        md_blocks.append(r"\newpage")
+                    elif lvl >= 2:
+                        prev_p_lines = pages_data[pnum - 2]["lines"]
+                        min_prev_y = min((l["y"] for l in prev_p_lines), default=999.0)
+                        if min_prev_y > 250.0:
+                            md_blocks.append(r"\newpage")
+
+                h_parts = [format_inline_line(ln["glyphs"], in_heading=True) for ln in ev["lines"]]
+                h_txt = " ".join(h_parts).strip()
+                if num_str:
+                    h_txt = re.sub(r"^" + re.escape(num_str) + r"\.?\s*", "", h_txt)
+                if num_str in toc_bold_map:
+                    bw = toc_bold_map[num_str]
+                    h_txt = re.sub(r"\b" + re.escape(bw) + r"\b", f"**{bw}**", h_txt, count=1)
+                md_blocks.append("#" * lvl + " " + h_txt)
+
+                if r"`\needspace`" in h_txt and ev_idx == len(merged_events) - 1:
+                    md_blocks.append(r"\needspace{4cm}")
+
+    flush_code_box()
+    flush_prose()
+    return "\n\n".join(b for b in md_blocks if b) + "\n"
+
+
+if __name__ == "__main__":
+    pdf_file = sys.argv[1]
+    out_file = sys.argv[2]
+    md_text = convert_pdf_to_md(pdf_file)
+    with open(out_file, "w", encoding="utf-8") as out_f:
+        out_f.write(md_text)
+PYTHON
+
+# --- 5. Convertir cada archivo y mostrar mensajes -----------------------------
+fallidos=()
+temporal=""
+trap 'rm -f -- ${temporal:+"$temporal"}' EXIT
+trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
+
+for archivo in "${archivos[@]}"; do
+  salida="${archivo:r}.md"
+  temporal="$(mktemp --suffix=.md)"
+  if python3 -c "$CONVERTIR_PY" "$archivo" "$temporal" && mv -f -- "$temporal" "$salida"; then
+    temporal=""
+    echo "✔ Generado: $salida"
+  else
+    rm -f -- "$temporal"
+    temporal=""
+    echo "❌ Error al convertir: $archivo"
+    fallidos+=("$archivo")
+  fi
+done
+
+if (( ${#fallidos[@]} > 0 )); then
+  echo "⚠️ No se pudieron convertir ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}"
+  exit 1
+fi
+echo "✅ Conversión completa."

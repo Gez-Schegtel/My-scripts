@@ -1539,8 +1539,9 @@ def format_table(header_lines, body_lines, stroke_info, left_margin, line_step, 
         for c in range(n_cols)
     ]
     best_D = None
+    max_D = (72 - (n_cols + 1) + 1) if not is_full_width else 125
     for tol in (0.00008, 0.0005, 0.0018):
-        for D in range(n_cols * 3, 125):
+        for D in range(n_cols * 3, max_D):
             ks = [round(r * D) for r in reals]
             if sum(ks) == D and all(k >= 1 and abs(k / D - r) <= tol for k, r in zip(ks, reals)):
                 if all(k >= mk for k, mk in zip(ks, min_ks)) or not is_colon_style:
@@ -1567,7 +1568,7 @@ def format_table(header_lines, body_lines, stroke_info, left_margin, line_step, 
     else:
         if best_D:
             ks = [round(r * best_D) for r in reals]
-            if best_D < 45 and best_D not in (29, 45) and not all(k == 3 for k in ks):
+            if is_full_width and best_D < 45 and best_D not in (29, 45) and not all(k == 3 for k in ks):
                 if best_D == 17:
                     mult = 3
                 else:

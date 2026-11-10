@@ -24,8 +24,16 @@
 #          de un ítem de lista;
 #        - y antes y después de una imagen sola en su línea (si no, pandoc
 #          la pega al texto de arriba y de abajo).
-#      Entre los ítems de una lista que ya empezó no agrega nada (la lista no
-#      se parte).
+#      Entre los ítems de una lista también agrega una línea en blanco (en
+#      las sublistas y en las listas dentro de una cita también), porque así
+#      el Markdown queda más prolijo. La lista sigue siendo una sola (no se
+#      parte). En el PDF sale igual con o sin esas líneas: el estilo de
+#      Pandoc config les da a todas las listas la misma separación.
+#      Párrafo pegado al último ítem: pandoc lo mete adentro del ítem. Si el
+#      ítem termina una oración (. ! ? : ; o un cierre como ") y el renglón
+#      de abajo no tiene sangría ni empieza en minúscula, es un párrafo
+#      nuevo y le agrega la línea en blanco. Un ítem cortado a mano a mitad
+#      de oración no se toca.
 #      Sublistas: pandoc solo anida una sublista si empieza al menos en la
 #      columna del texto del ítem de arriba (3 espacios debajo de "1. ");
 #      con menos, corta la lista en pedazos. Les agrega la sangría que falta.
@@ -748,6 +756,10 @@ for (my $i = 0; $i < @in; $i++) {
     $en_lista = 0; $en_cita = 0; @niveles = ();
   } elsif ($l =~ $item) {
     if (!$en_lista && $l =~ $item_inicio) { blanco_antes(); @niveles = (); }
+    # Ítems separados: una línea en blanco entre ítem e ítem (también antes
+    # de una sublista), para que el Markdown quede más prolijo. Pandoc sigue
+    # viendo una sola lista, y el estilo la separa igual en el PDF.
+    blanco_antes() if $en_lista;
     $en_lista = 1 if $en_lista || $l =~ $item_inicio || ($out[-1] // "") !~ /\S/;
     $en_cita = 0;
     $l = sangrar_item($l) if $en_lista;
@@ -762,11 +774,23 @@ for (my $i = 0; $i < @in; $i++) {
     my ($pre, $dentro) = $l =~ /^(\s{0,3}>)\s?(.*)$/;
     if ($en_cita && $dentro =~ $item_inicio && !$cita_lista && $cita_previa =~ /\S/) {
       push @out, $pre . $vacia;
+    } elsif ($en_cita && $dentro =~ $item && $cita_lista && $cita_previa =~ /\S/) {
+      push @out, $pre . $vacia;           # ítems separados también dentro de la cita
     }
     if    ($dentro =~ $item)                               { $cita_lista = 1; }
     elsif ($dentro =~ /\S/ && $dentro !~ /^\s/ && $cita_previa !~ /\S/) { $cita_lista = 0; }
     $cita_previa = $dentro;
     $en_cita = 1;
+  } elsif ($en_lista && $l =~ /^\S/ && txt($l) !~ /^\p{Ll}/
+           && ($out[-1] // "") =~ /[.!?:;)\]"'»][*_`]*\s*\r?$/) {
+    # Párrafo pegado al último ítem de una lista: pandoc lo toma como parte
+    # del ítem (una línea "perezosa") y lo mete adentro de la lista. Si el
+    # ítem de arriba termina una oración y el renglón no tiene sangría ni
+    # empieza en minúscula, es un párrafo nuevo: va con una línea en blanco
+    # antes. Un ítem cortado a mano a mitad de oración ("con un texto que
+    # / sigue acá") no termina así, y se deja como está.
+    blanco_antes();
+    $en_lista = 0; @niveles = ();
   } elsif ($l !~ /^\s/ && ($out[-1] // "") !~ /\S/) {
     $en_lista = 0; @niveles = ();         # párrafo nuevo, fuera de la lista
   }

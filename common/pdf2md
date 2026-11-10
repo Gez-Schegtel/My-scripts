@@ -9,7 +9,8 @@
 #   de los PDF generados con mi configuración de estilo ("pandoc -d estilo"),
 #   incluyendo la cabecera YAML (title, subtitle, author, date, toc, márgenes,
 #   tipografías, interlineado...), títulos, listas, tablas (simples y de varias
-#   páginas), bloques de código con su lenguaje, código en línea, fórmulas en
+#   páginas, incluidas las de grilla completa de Google Docs, Word o
+#   LibreOffice, con celdas combinadas y viñetas dentro de las celdas), bloques de código con su lenguaje, código en línea, fórmulas en
 #   LaTeX ($...$ y $$...$$), citas, enlaces, emojis de Noto Color Emoji e
 #   imágenes con sus atributos ({.derecha width=25%}, etc.). También funciona
 #   con PDF de texto comunes.
@@ -31,7 +32,11 @@
 #        respuesta cancela). Con -y no pregunta.
 #     3. Convierte cada PDF y guarda el .md al lado con el mismo nombre
 #        (apunte.pdf -> apunte.md).
-#     4. Si un archivo falla, sigue con los demás y al final informa cuáles
+#     4. Si un PDF contiene tipografías no soportadas, caracteres sin texto
+#        legible o no tiene capa de texto (por ejemplo si está escaneado), el
+#        script avisa y no genera el archivo para evitar producir un documento
+#        incorrecto.
+#     5. Si un archivo falla, sigue con los demás y al final informa cuáles
 #        no se pudieron convertir.
 #
 # USO:
@@ -67,8 +72,11 @@ usage() {
 Uso: pdf2md [-y] [-h] [archivo.pdf ...]
 
 Convierte archivos PDF (.pdf) a Markdown (.md), recuperando la estructura,
-cabecera YAML, tablas, bloques de código, fórmulas, citas, emojis e imágenes.
+cabecera YAML, tablas (también las de Google Docs, Word o LibreOffice),
+bloques de código, fórmulas, citas, emojis e imágenes.
 Si no le pasás ningún archivo, busca todos los .pdf de la carpeta actual.
+Si un archivo contiene tipografías no soportadas, caracteres sin texto legible
+o carece de capa de texto (escaneado), avisa y no realiza la conversión.
 
 Opciones:
   -y, --yes   Convierte sin pedir confirmación.
@@ -156,6 +164,7 @@ fi
 # --- Motor de conversión en Python --------------------------------------------
 read -r -d '' CONVERTIR_PY <<'PYTHON'
 import hashlib
+import math
 import io
 import json
 import os
@@ -164,7 +173,7 @@ import struct
 import subprocess
 import sys
 import warnings
-from collections import defaultdict
+from collections import defaultdict, Counter
 import lxml.etree as ET
 from PIL import Image
 from pdfminer.pdfdocument import PDFDocument
@@ -173,6 +182,10 @@ from pdfminer.pdfparser import PDFParser
 from pdfminer.pdftypes import resolve1
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+
+class UnsupportedFontError(Exception):
+    pass
 
 NOTO_EMOJI_TTF = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
 EMOJI_CACHE_PATH = os.path.expanduser("~/.cache/pdf2md_noto_emoji.json")
@@ -689,7 +702,8 @@ def format_inline_line(glyphs, in_heading=False, is_quote_first_line=False):
     y_base = sum(norm_ys) / len(norm_ys) if norm_ys else glyphs[0]["y"]
 
     has_pure_italic = any(
-        not ("Bold" in g["fn"] or "BX" in g["fn"]) and ("Ital" in g["fn"] or "Oblique" in g["fn"] or "TI" in g["fn"])
+        not any(term in g["fn"] for term in ("Bold", "BX", "Black", "Heavy", "Semibold", "SemiBold", "Demi"))
+        and any(term in g["fn"] for term in ("Ital", "Oblique", "Slanted", "TI", "Kursiv"))
         for g in glyphs
     )
     styles = []
@@ -697,15 +711,15 @@ def format_inline_line(glyphs, in_heading=False, is_quote_first_line=False):
         fn = g["fn"]
         if "Math" in fn and g["u"] not in ("↪", "⌋"):
             styles.append("math")
-        elif "Mono" in fn:
+        elif any(term in fn for term in ("Mono", "Courier", "Consolas", "Menlo", "Monaco", "Fixed", "Code", "Typewriter")):
             styles.append("mono")
         elif g.get("is_emoji"):
             styles.append("emoji")
         elif in_heading:
             styles.append("normal")
         else:
-            is_b = "Bold" in fn or "BX" in fn
-            is_i = "Ital" in fn or "Oblique" in fn or "TI" in fn
+            is_b = any(term in fn for term in ("Bold", "BX", "Black", "Heavy", "Semibold", "SemiBold", "DemiBold", "Demi", "Bd"))
+            is_i = any(term in fn for term in ("Ital", "Oblique", "Slanted", "TI", "Kursiv"))
             if is_b and is_i:
                 if "Libertinus" in fn and has_pure_italic:
                     styles.append("bold")
@@ -973,10 +987,108 @@ def format_inline_line(glyphs, in_heading=False, is_quote_first_line=False):
     return res
 
 
+def path_segments(el, tr, H):
+    # Descompone un trazo de mutool en sus segmentos rectos (en coordenadas
+    # PDF, con el eje y hacia arriba). Hace falta porque algunos programas
+    # dibujan el borde de una celda como un rectángulo en un solo trazo y otros
+    # como líneas sueltas.
+    def to_pdf(x, y):
+        return (tr[0] * x + tr[2] * y + tr[4], H - (tr[1] * x + tr[3] * y + tr[5]))
+
+    segs = []
+    cur = None
+    start = None
+    for c in el:
+        if c.tag == "moveto":
+            cur = to_pdf(float(c.get("x", 0)), float(c.get("y", 0)))
+            start = cur
+        elif c.tag == "lineto" and cur is not None:
+            nxt = to_pdf(float(c.get("x", 0)), float(c.get("y", 0)))
+            segs.append((cur, nxt))
+            cur = nxt
+        elif c.tag == "closepath" and cur is not None and start is not None:
+            if cur != start:
+                segs.append((cur, start))
+            cur = start
+        elif c.tag == "curveto":
+            # Las curvas no forman parte de una grilla: cortamos el tramo.
+            cur = None
+    return segs
+
+
+def cluster_values(vals, tol=2.5):
+    # Agrupa coordenadas casi iguales (por ejemplo, el borde compartido por
+    # dos celdas vecinas, que cada una dibuja por su cuenta).
+    out = []
+    for v in sorted(vals):
+        if out and v - out[-1][-1] <= tol:
+            out[-1].append(v)
+        else:
+            out.append([v])
+    return [sum(g) / len(g) for g in out]
+
+
+def find_grid_tables(h_segs, v_segs):
+    # Busca tablas dibujadas con grilla completa (las de Google Docs, Word o
+    # LibreOffice): conjuntos de líneas horizontales y verticales que se tocan.
+    # Las tablas de LaTeX (booktabs) no tienen líneas verticales, así que no
+    # entran acá y las sigue manejando format_table.
+    TOL = 2.5
+    n_h = len(h_segs)
+    parent = list(range(n_h + len(v_segs)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for i, (hy, hx0, hx1) in enumerate(h_segs):
+        for j, (vx, vy0, vy1) in enumerate(v_segs):
+            if vy0 - TOL <= hy <= vy1 + TOL and hx0 - TOL <= vx <= hx1 + TOL:
+                ra, rb = find(i), find(n_h + j)
+                if ra != rb:
+                    parent[ra] = rb
+
+    comps = defaultdict(lambda: ([], []))
+    for i in range(n_h):
+        comps[find(i)][0].append(h_segs[i])
+    for j in range(len(v_segs)):
+        comps[find(n_h + j)][1].append(v_segs[j])
+
+    tables = []
+    for hs, vs in comps.values():
+        if len(hs) < 2 or len(vs) < 2:
+            continue
+        xs = cluster_values([v[0] for v in vs])
+        ys = sorted(cluster_values([h[0] for h in hs]), reverse=True)
+        if len(xs) < 2 or len(ys) < 2:
+            continue
+        x0, x1 = xs[0], xs[-1]
+        y_top, y_bot = ys[0], ys[-1]
+        if x1 - x0 < 20.0 or y_top - y_bot < 8.0:
+            continue
+        # Un recuadro de una sola celda es un marco alrededor de un texto,
+        # no una tabla: lo dejamos como texto común.
+        if len(xs) == 2 and len(ys) == 2:
+            continue
+        tables.append({
+            "xs": xs,
+            "ys": ys,
+            "x0": x0,
+            "x1": x1,
+            "y_top": y_top,
+            "y_bot": y_bot,
+            "v_segs": vs,
+        })
+    return tables
+
+
 def parse_trace_pages(pdf_path, page_xobjects, page_links):
     xml_bytes = subprocess.check_output(["mutool", "draw", "-F", "trace", "--", pdf_path], stderr=subprocess.DEVNULL)
     root = ET.fromstring(xml_bytes)
     pages_data = []
+    font_stats = defaultdict(lambda: {"total": 0, "unsupported": 0})
 
     for p_idx, p_el in enumerate(root.findall("page"), 1):
         mb = [float(x) for x in p_el.get("mediabox", "0 0 612 792").split()]
@@ -985,6 +1097,8 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
         quote_boxes = []
         table_strokes = []
         math_strokes = []
+        grid_h = []
+        grid_v = []
         page_emojis = []
         page_images = []
         raw_glyphs = []
@@ -997,31 +1111,45 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
             tag = el.tag
             if tag == "fill_path":
                 col = el.get("color", "")
-                tr = [float(x) for x in el.get("transform", "1 0 0 -1 0 0").split()]
+                tr = [float(x) for x in el.get("transform", "1 0 0 1 0 0").split()]
                 xs = [float(c.get("x", 0)) for c in el if "x" in c.attrib]
                 ys = [float(c.get("y", 0)) for c in el if "y" in c.attrib]
                 if not xs or not ys:
                     continue
-                x0 = tr[4] + min(xs)
-                x1 = tr[4] + max(xs)
-                y_bot = H - tr[5]
-                y_top = y_bot + (max(ys) - min(ys))
+                pts = [(tr[0] * x + tr[2] * y + tr[4], H - (tr[1] * x + tr[3] * y + tr[5])) for x, y in zip(xs, ys)]
+                x0 = min(p[0] for p in pts)
+                x1 = max(p[0] for p in pts)
+                y_bot = min(p[1] for p in pts)
+                y_top = max(p[1] for p in pts)
                 if col == ".97255 .97255 .97255":
                     code_boxes.append((x0, y_bot, x1, y_top))
                 elif col == ".9098 .9451 .98431":
                     quote_boxes.append((x0, y_bot, x1, y_top))
+                elif col not in ("1", "1 1 1", "1 1 1 1"):
+                    # Algunos programas (como Word) dibujan los bordes de las
+                    # celdas como rectángulos rellenos muy finos.
+                    if x1 - x0 < 2.5 and y_top - y_bot > 5.0:
+                        grid_v.append(((x0 + x1) / 2, y_bot, y_top))
+                    elif y_top - y_bot < 2.5 and x1 - x0 > 5.0:
+                        grid_h.append(((y_bot + y_top) / 2, x0, x1))
 
             elif tag == "stroke_path":
                 lw = float(el.get("linewidth", "0"))
-                tr = [float(x) for x in el.get("transform", "1 0 0 -1 0 0").split()]
+                tr = [float(x) for x in el.get("transform", "1 0 0 1 0 0").split()]
                 xs = [float(c.get("x", 0)) for c in el if "x" in c.attrib]
                 ys = [float(c.get("y", 0)) for c in el if "y" in c.attrib]
                 if not xs or not ys:
                     continue
-                if max(ys) - min(ys) < 1.0 and max(xs) - min(xs) > 5.0:
-                    x0 = tr[4] + min(xs)
-                    x1 = tr[4] + max(xs)
-                    y_pdf = H - tr[5]
+                for (ax, ay), (bx, by) in path_segments(el, tr, H):
+                    if abs(ay - by) < 1.5 and abs(ax - bx) > 5.0:
+                        grid_h.append(((ay + by) / 2, min(ax, bx), max(ax, bx)))
+                    elif abs(ax - bx) < 1.5 and abs(ay - by) > 5.0:
+                        grid_v.append(((ax + bx) / 2, min(ay, by), max(ay, by)))
+                pts = [(tr[0] * x + tr[2] * y + tr[4], H - (tr[1] * x + tr[3] * y + tr[5])) for x, y in zip(xs, ys)]
+                x0 = min(p[0] for p in pts)
+                x1 = max(p[0] for p in pts)
+                y_pdf = sum(p[1] for p in pts) / len(pts)
+                if max(p[1] for p in pts) - min(p[1] for p in pts) < 1.5 and x1 - x0 > 5.0:
                     if lw > 0.5:
                         table_strokes.append((y_pdf, x0, x1, lw))
                     else:
@@ -1048,16 +1176,22 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
 
             elif tag == "fill_text":
                 col = el.get("color", "0")
+                tr = [float(x) for x in el.get("transform", "1 0 0 1 0 0").split()]
                 for sp in el.findall("span"):
                     fn = sp.get("font", "").split("+")[-1]
-                    sz = float(sp.get("trm", "10.91 0 0 10.91").split()[0])
+                    trm = [float(x) for x in sp.get("trm", "1 0 0 1").split()]
+                    sz = math.hypot(tr[0] * trm[0] + tr[2] * trm[1], tr[1] * trm[0] + tr[3] * trm[1])
                     for g in sp.findall("g"):
-                        xv = float(g.get("x", 0))
-                        yv = float(g.get("y", 0))
+                        gx = float(g.get("x", 0))
+                        gy = float(g.get("y", 0))
                         adv = float(g.get("adv", 0.5)) * sz
                         u = g.get("unicode", "")
-                        if not u:
+                        font_stats[fn]["total"] += 1
+                        if not u or u == "\ufffd" or any("\ue000" <= ch <= "\uf8ff" for ch in u):
+                            font_stats[fn]["unsupported"] += 1
                             continue
+                        xv = tr[0] * gx + tr[2] * gy + tr[4]
+                        yv = H - (tr[1] * gx + tr[3] * gy + tr[5])
                         uri = None
                         for lx0, ly0, lx1, ly1, luri in links:
                             if lx0 - 2 <= xv <= lx1 + 2 and ly0 - 2 <= yv <= ly1 + 2:
@@ -1097,7 +1231,7 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
         for g in main_glyphs:
             placed = False
             for ln in lines:
-                if abs(g["y"] - ln["y"]) <= 1.6:
+                if abs(g["y"] - ln["y"]) <= 2.2:
                     ln["glyphs"].append(g)
                     nys = [x["y"] for x in ln["glyphs"] if x["sz"] >= 8.8]
                     if nys:
@@ -1162,6 +1296,20 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
             ln["x0"] = ln["glyphs"][0]["x0"]
             ln["x1"] = max(g["x1"] for g in ln["glyphs"])
 
+        grid_tables = find_grid_tables(grid_h, grid_v)
+
+        def in_grid(stroke):
+            y, x0, x1 = stroke[0], stroke[1], stroke[2]
+            return any(
+                gt["y_bot"] - 3.0 <= y <= gt["y_top"] + 3.0 and x0 >= gt["x0"] - 3.0 and x1 <= gt["x1"] + 3.0
+                for gt in grid_tables
+            )
+
+        # Las líneas de una grilla ya están resueltas: no tienen que confundirse
+        # con las reglas de una tabla de LaTeX ni con las barras de una fracción.
+        table_strokes = [s for s in table_strokes if not in_grid(s)]
+        math_strokes = [s for s in math_strokes if not in_grid(s)]
+
         pages_data.append({
             "pnum": p_idx,
             "W": W,
@@ -1171,17 +1319,18 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
             "quote_boxes": quote_boxes,
             "table_strokes": table_strokes,
             "math_strokes": math_strokes,
+            "grid_tables": grid_tables,
             "images": page_images,
         })
 
-    return pages_data
+    return pages_data, font_stats
 
 
 def format_code_block(lines, left_margin, has_box):
     if not lines:
         return "```\n```"
     first_fn = lines[0]["glyphs"][0]["fn"]
-    char_w = 5.1054 if "JetBrains" in first_fn else 5.7294
+    char_w = 5.1054 if "JetBrains" in first_fn else (5.7294 if "LMMono" in first_fn else (lines[0]["glyphs"][0]["sz"] * 0.6))
 
     logical_lines = []
     prev_y = None
@@ -1597,6 +1746,165 @@ def format_table(header_lines, body_lines, stroke_info, left_margin, line_step, 
     return "\n".join(out_lines)
 
 
+GRID_BULLETS = {"•", "●", "○", "■", "▪", "►", "▸", "◦", "-", "–"}
+
+
+def grid_cell_text(sub_lines, marks_wraps=False):
+    # Une los renglones de una celda en un solo texto (las tablas "pipe" de
+    # Markdown no admiten saltos de línea dentro de una celda). Las viñetas se
+    # conservan como "•" para que no se pierda la separación entre ítems.
+    #
+    # marks_wraps indica que el programa que generó el PDF deja un espacio al
+    # final de cada renglón cortado normalmente (como Google Docs). En ese
+    # caso, un renglón que termina en letra sin espacio y sigue en minúscula
+    # es una palabra larga que no entró en la celda ("Organizacio" + "nal"),
+    # y se vuelve a pegar.
+    parts = []
+    prev_glued_end = False
+    for gs in sub_lines:
+        gs = sorted(gs, key=lambda g: g["x0"])
+        starts_lower = bool(gs) and gs[0]["u"][:1].islower()
+        glue = marks_wraps and prev_glued_end and starts_lower and bool(parts)
+        prev_glued_end = bool(gs) and gs[-1]["u"][-1:].isalpha()
+        is_item = False
+        if len(gs) > 1 and gs[0]["u"] in GRID_BULLETS and not gs[0].get("is_emoji"):
+            nxt = gs[1]
+            if gs[0]["u"] not in ("-", "–") or nxt["u"] in (" ", " ", "​") or nxt["x0"] - gs[0]["x1"] > 2.0:
+                is_item = True
+                gs = gs[1:]
+        while gs and gs[0]["u"] in (" ", " ", "​"):
+            gs = gs[1:]
+        if not gs:
+            continue
+        txt = format_inline_line(gs).strip()
+        if not txt:
+            continue
+        if glue and not is_item:
+            parts[-1] += txt
+        else:
+            parts.append(f"• {txt}" if is_item else txt)
+    txt = merge_wrapped_emphasis(" ".join(parts))
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt.replace("|", r"\|")
+
+
+def extract_grid_rows(gt, p_lines, consumed_lines):
+    # Reparte el texto de la página entre las celdas de la grilla. Cada glifo
+    # va a la celda donde cae su centro. Si a una fila le falta un borde
+    # vertical, esas celdas están combinadas y el texto queda en la primera.
+    xs, ys = gt["xs"], gt["ys"]
+    n_cols = len(xs) - 1
+    n_rows = len(ys) - 1
+    cell_lines = [[[] for _ in range(n_cols)] for _ in range(n_rows)]
+
+    for l_idx, ln in enumerate(p_lines):
+        if l_idx in consumed_lines:
+            continue
+        if not (gt["y_bot"] - 1.0 < ln["y"] < gt["y_top"] + 1.0):
+            continue
+        inside = []
+        outside = []
+        for g in ln["glyphs"]:
+            cx = (g["x0"] + g["x1"]) / 2
+            if gt["x0"] - 1.0 <= cx <= gt["x1"] + 1.0:
+                inside.append(g)
+            else:
+                outside.append(g)
+        if not inside:
+            continue
+        if outside:
+            ln["glyphs"] = outside
+            ln["x0"] = outside[0]["x0"]
+            ln["x1"] = max(g["x1"] for g in outside)
+        else:
+            consumed_lines.add(l_idx)
+
+        per_cell = defaultdict(list)
+        for g in inside:
+            r = next((k for k in range(n_rows) if ys[k + 1] - 1.0 < g["y"] <= ys[k] + 1.0), None)
+            if r is None:
+                continue
+            cx = (g["x0"] + g["x1"]) / 2
+            c = next((k for k in range(n_cols) if cx <= xs[k + 1]), n_cols - 1)
+            per_cell[(r, c)].append(g)
+        for (r, c), gs in per_cell.items():
+            cell_lines[r][c].append(gs)
+
+    def has_border(x, y):
+        return any(abs(vx - x) <= 2.5 and vy0 - 2.5 <= y <= vy1 + 2.5 for vx, vy0, vy1 in gt["v_segs"])
+
+    # ¿El PDF marca con un espacio final los renglones cortados normalmente?
+    # Se mira solo en celdas de más de un renglón, en todas menos su último.
+    marks_wraps = any(
+        max(gs, key=lambda g: g["x1"])["u"] in (" ", " ")
+        for row in cell_lines
+        for cl in row
+        for gs in sorted(cl, key=lambda s: -s[0]["y"])[:-1]
+        if len(cl) > 1
+    )
+
+    rows = []
+    for r in range(n_rows):
+        y_mid = (ys[r] + ys[r + 1]) / 2
+        cells = [""] * n_cols
+        c = 0
+        while c < n_cols:
+            span_end = c
+            while span_end + 1 < n_cols and not has_border(xs[span_end + 1], y_mid):
+                span_end += 1
+            merged = []
+            for k in range(c, span_end + 1):
+                merged.extend(cell_lines[r][k])
+            # Si la celda está combinada, los pedazos de un mismo renglón que
+            # cayeron en columnas distintas tienen que volver a juntarse.
+            by_y = []
+            for gs in merged:
+                y = gs[0]["y"]
+                for grp in by_y:
+                    if abs(grp[0] - y) <= 2.2:
+                        grp[1].extend(gs)
+                        break
+                else:
+                    by_y.append([y, list(gs)])
+            by_y.sort(key=lambda t: -t[0])
+            cells[c] = grid_cell_text([t[1] for t in by_y], marks_wraps)
+            c = span_end + 1
+        if any(cells):
+            rows.append(cells)
+    return rows
+
+
+def format_grid_table(rows, xs):
+    # Escribe la tabla como "pipe table" de Pandoc. Si entra en el ancho de
+    # una línea (72 caracteres) se alinea con espacios; si no, la cantidad de
+    # guiones de cada columna conserva la proporción de anchos del PDF.
+    if not rows:
+        return ""
+    n_cols = len(xs) - 1
+    widths = [xs[c + 1] - xs[c] for c in range(n_cols)]
+    total_w = sum(widths) or 1.0
+    content_w = [max(3, max(len(r[c]) for r in rows)) for c in range(n_cols)]
+    natural_len = sum(content_w) + 3 * n_cols + 1
+
+    if natural_len <= 72:
+        sep = ["-" * (w + 2) for w in content_w]
+        out = []
+        for i, r in enumerate(rows):
+            out.append("|" + "|".join(f" {r[c].ljust(content_w[c])} " for c in range(n_cols)) + "|")
+            if i == 0:
+                out.append("|" + "|".join(sep) + "|")
+        return "\n".join(out)
+
+    budget = max(72, 3 * n_cols)
+    sep = ["-" * max(3, round(w / total_w * budget)) for w in widths]
+    out = []
+    for i, r in enumerate(rows):
+        out.append("|" + "|".join(f" {cell} " if cell else " " for cell in r) + "|")
+        if i == 0:
+            out.append("|" + "|".join(sep) + "|")
+    return "\n".join(out)
+
+
 def format_display_math(math_lines, math_strokes, prev_line_text=""):
     all_glyphs = [g for ln in math_lines for g in ln["glyphs"]]
     if not all_glyphs:
@@ -1667,14 +1975,26 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
 
         item_type = None
         prefix = ""
-        if gs[0]["u"] == "•" and x0 < left_margin + 25.0:
-            item_type = "ul1"
-            prefix = "- "
+        BULLET_CHARS = {"•", "●", "○", "■", "▪", "►", "▸"}
+        if gs[0]["u"] in BULLET_CHARS:
+            if gs[0]["u"] in ("•", "●", "►", "▸") and x0 < left_margin + 20.0:
+                item_type = "ul1"
+                prefix = "- "
+            elif gs[0]["u"] == "○" or (left_margin + 20.0 <= x0 < left_margin + 45.0):
+                item_type = "ul2"
+                prefix = "  - "
+            else:
+                item_type = "ul3"
+                prefix = "    - "
             gs = gs[1:]
-        elif gs[0]["u"] == "–" and "Bold" in gs[0]["fn"] and x0 > left_margin + 25.0:
+            while gs and gs[0]["u"] in (" ", "\u00a0", "\u200b"):
+                gs = gs[1:]
+        elif gs[0]["u"] == "–" and "Bold" in gs[0]["fn"] and x0 > left_margin + 20.0:
             item_type = "ul2"
             prefix = "    - " if "Libertinus" in gs[0]["fn"] else "  - "
             gs = gs[1:]
+            while gs and gs[0]["u"] in (" ", "\u00a0", "\u200b"):
+                gs = gs[1:]
         else:
             min_indent = left_margin + 8.0
             if x0 >= min_indent and len(gs) >= 2:
@@ -1684,8 +2004,13 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
                 tok = "".join(g["u"] for g in gs[:k])
                 if re.match(r"^(?:\d+\.|[a-e]\))$", tok) and k < len(gs) and (gs[k]["x0"] - gs[k - 1]["x1"] > 2.5):
                     item_type = "ol"
-                    prefix = f"{tok} "
+                    if x0 > left_margin + 35.0:
+                        prefix = f"  {tok} "
+                    else:
+                        prefix = f"{tok} "
                     gs = gs[k:]
+                    while gs and gs[0]["u"] in (" ", "\u00a0", "\u200b"):
+                        gs = gs[1:]
 
         is_quote_first = in_quote and idx == 0 and item_type is None
         txt = merge_wrapped_emphasis(format_inline_line(gs, in_heading=False, is_quote_first_line=is_quote_first))
@@ -1787,7 +2112,7 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
         if b["type"] == "p":
             out_chunks.append(("p", "\n".join(b["lines"])))
         else:
-            indent = "  " if b["type"] == "ul1" else ("    " if b["type"] == "ul2" else "   ")
+            indent = "  " if b["type"] == "ul1" else ("    " if b["type"] in ("ul2", "ul3") else "   ")
             first_l = f"{b['prefix']}{b['lines'][0]}"
             rest_l = [f"{indent}{l}" for l in b["lines"][1:]]
             out_chunks.append(("list", "\n".join([first_l] + rest_l)))
@@ -1811,9 +2136,35 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
     pdf_dir = os.path.dirname(os.path.abspath(pdf_path))
     local_images = load_local_images(pdf_dir)
     info, dests, outlines, page_xobjects, page_links = inspect_pdf_structure(pdf_path, emoji_map, local_images)
-    pages_data = parse_trace_pages(pdf_path, page_xobjects, page_links)
+    pages_data, font_stats = parse_trace_pages(pdf_path, page_xobjects, page_links)
     if not pages_data:
         return ""
+
+    bad_fonts = []
+    for fn, stats in font_stats.items():
+        if stats["unsupported"] > 0:
+            cnt = stats["unsupported"]
+            cnt_str = "1 carácter" if cnt == 1 else f"{cnt} caracteres"
+            bad_fonts.append(f"'{fn}': {cnt_str} sin texto legible")
+    if bad_fonts:
+        fonts_str = ", ".join(bad_fonts)
+        raise UnsupportedFontError(
+            f"El archivo '{os.path.basename(pdf_path)}' contiene tipografías no soportadas o caracteres sin texto legible ({fonts_str}). "
+            f"Para evitar generar un documento incorrecto, no se realizó la conversión."
+        )
+
+    total_glyphs = sum(len(ln["glyphs"]) for pd in pages_data for ln in pd["lines"])
+    total_images = sum(len(pd["images"]) for pd in pages_data)
+    if total_glyphs == 0:
+        if total_images > 0:
+            raise UnsupportedFontError(
+                f"El archivo '{os.path.basename(pdf_path)}' no contiene una capa de texto legible (parece un documento escaneado). "
+                f"Usá 'auto-ocr' para reconocer el texto antes de convertirlo a Markdown."
+            )
+        else:
+            raise UnsupportedFontError(
+                f"El archivo '{os.path.basename(pdf_path)}' no contiene texto legible."
+            )
 
     W = pages_data[0]["W"]
     H = pages_data[0]["H"]
@@ -1895,6 +2246,49 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
     heading_line_ids = {}
     used_lines_for_headings = set()
     has_enddot = False
+
+    if not heading_dests_by_page:
+        BULLET_CHARS = {"•", "●", "○", "■", "▪", "►", "▸"}
+        all_body_sizes = [
+            g["sz"] for pd in pages_data for ln in pd["lines"] for g in ln["glyphs"]
+            if g["u"].isalnum() and not any(g["u"] in BULLET_CHARS for g in ln["glyphs"])
+        ]
+        if all_body_sizes:
+            sz_counts = Counter(round(sz, 1) for sz in all_body_sizes)
+            body_sz = sz_counts.most_common(1)[0][0]
+        else:
+            body_sz = 10.5
+
+        for p_idx, pd in enumerate(pages_data, 1):
+            p_lines = pd["lines"]
+            for l_idx, ln in enumerate(p_lines):
+                gs = ln["glyphs"]
+                if not gs:
+                    continue
+                txt = "".join(g["u"] for g in gs).strip()
+                if not txt or len(txt) > 130:
+                    continue
+                if gs[0]["u"] in BULLET_CHARS:
+                    continue
+                # El texto en negrita dentro de una tabla (por ejemplo, el
+                # encabezado) no es un título del documento.
+                if any(gt["y_bot"] < ln["y"] < gt["y_top"] and gt["x0"] <= ln["x0"] <= gt["x1"] for gt in pd["grid_tables"]):
+                    continue
+                bolds =sum(1 for g in gs if "Bold" in g["fn"] or "BX" in g["fn"])
+                is_mostly_bold = bolds >= len(gs) * 0.7
+                avg_sz = sum(g["sz"] for g in gs) / len(gs)
+                lvl = None
+                if avg_sz >= body_sz * 1.5:
+                    lvl = 1
+                elif avg_sz >= body_sz * 1.22:
+                    lvl = 2
+                elif avg_sz >= body_sz * 1.10 and is_mostly_bold:
+                    lvl = 3
+                elif is_mostly_bold and re.match(r"^(?:(?:\d+\.|[A-Z]\.|[IVXLCDM]+\.)\s+|Punto\s+[A-Z]\b|📋)", txt):
+                    lvl = 2 if re.match(r"^(?:\d+\.|Punto\s+[A-Z]\b)", txt) else 3
+                if lvl is not None:
+                    heading_line_ids[(p_idx, l_idx)] = (lvl, "", "", ln["y"], [])
+
     for pnum, hlist in heading_dests_by_page.items():
         p_lines = pages_data[pnum - 1]["lines"]
         for yd, lvl, num_str, k in hlist:
@@ -1951,7 +2345,7 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                                 toc_bold_map[m.group(1)] = b_word
 
     md_blocks = []
-    if title_str or "Doc-Start" in dests:
+    if "Doc-Start" in dests:
         yaml_lines = [
             "---",
             f'title: "{title_str}"',
@@ -2018,6 +2412,9 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
     open_table = None
     open_code_box = None
     pending_prose = []
+    # Última tabla con grilla escrita: si la página siguiente empieza con una
+    # tabla de las mismas columnas, es la continuación y se une a esta.
+    last_grid = None
 
     def flush_prose():
         nonlocal pending_prose
@@ -2056,7 +2453,15 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                     break
             else:
                 y_top, x0, x1, _ = strokes[s_idx]
-                y_mid = strokes[s_idx + 1][0] if s_idx + 1 < len(strokes) else y_top - 25.0
+                # Una tabla de LaTeX empieza con dos reglas del mismo ancho
+                # (toprule y midrule). Una regla suelta, o seguida por otra de
+                # distinto ancho, es una línea horizontal separadora.
+                nxt_s = strokes[s_idx + 1] if s_idx + 1 < len(strokes) else None
+                if nxt_s is None or abs(nxt_s[1] - x0) > 3.0 or abs(nxt_s[2] - x1) > 3.0:
+                    table_regions.append((y_top, None, None, False, False, x0, x1))
+                    s_idx += 1
+                    continue
+                y_mid = nxt_s[0]
                 s_idx += 2
                 if s_idx < len(strokes) and strokes[s_idx][3] > 0.7:
                     y_bot = strokes[s_idx][0]
@@ -2080,7 +2485,17 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
 
         events = []
 
+        for gt in pd["grid_tables"]:
+            if pnum == start_pnum and gt["y_top"] > start_y_max:
+                continue
+            rows = extract_grid_rows(gt, p_lines, consumed_lines)
+            if rows:
+                events.append({"y": gt["y_top"], "type": "grid_table", "rows": rows, "xs": gt["xs"]})
+
         for y_top, y_mid, y_bot, is_cont, cont_next, tx0, tx1 in table_regions:
+            if y_mid is None:
+                events.append({"y": y_top, "type": "hrule"})
+                continue
             t_hdr = []
             t_body = []
             for l_idx, ln in enumerate(p_lines):
@@ -2248,7 +2663,37 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
 
             flush_prose()
 
-            if etype == "table_part":
+            if etype == "grid_table":
+                rows = ev["rows"]
+                is_continuation = (
+                    ev_idx == 0
+                    and last_grid is not None
+                    and last_grid["idx"] == len(md_blocks) - 1
+                    and len(last_grid["xs"]) == len(ev["xs"])
+                    and all(abs(a - b) <= 3.0 for a, b in zip(last_grid["xs"], ev["xs"]))
+                )
+                if is_continuation:
+                    prev_rows = last_grid["rows"]
+                    # Si la página nueva repite el encabezado, no lo duplicamos.
+                    if rows and rows[0] == prev_rows[0]:
+                        rows = rows[1:]
+                    # Una fila partida entre páginas sigue con la primera celda
+                    # vacía: su texto se une al de la última fila anterior.
+                    if rows and not rows[0][0] and prev_rows[-1][0] and len(prev_rows) > 1:
+                        prev_rows[-1] = [
+                            (a + " " + b).strip() if b else a for a, b in zip(prev_rows[-1], rows[0])
+                        ]
+                        rows = rows[1:]
+                    prev_rows.extend(rows)
+                    md_blocks[-1] = format_grid_table(prev_rows, last_grid["xs"])
+                else:
+                    md_blocks.append(format_grid_table(rows, ev["xs"]))
+                    last_grid = {"idx": len(md_blocks) - 1, "xs": ev["xs"], "rows": [list(r) for r in rows]}
+
+            elif etype == "hrule":
+                md_blocks.append("---")
+
+            elif etype == "table_part":
                 if ev["is_cont"] and open_table is not None:
                     open_table["body_lines"].extend(ev["body"])
                 else:
@@ -2339,9 +2784,13 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
 if __name__ == "__main__":
     pdf_file = sys.argv[1]
     out_file = sys.argv[2]
-    md_text = convert_pdf_to_md(pdf_file)
-    with open(out_file, "w", encoding="utf-8") as out_f:
-        out_f.write(md_text)
+    try:
+        md_text = convert_pdf_to_md(pdf_file)
+        with open(out_file, "w", encoding="utf-8") as out_f:
+            out_f.write(md_text)
+    except UnsupportedFontError as e:
+        sys.stderr.write(f"⚠️ Aviso: {e}\n")
+        sys.exit(2)
 PYTHON
 
 # --- 5. Convertir cada archivo y mostrar mensajes -----------------------------
@@ -2353,9 +2802,17 @@ trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
 for archivo in "${archivos[@]}"; do
   salida="${archivo:r}.md"
   temporal="$(mktemp --suffix=.md)"
-  if python3 -c "$CONVERTIR_PY" "$archivo" "$temporal" && mv -f -- "$temporal" "$salida"; then
+  python3 -c "$CONVERTIR_PY" "$archivo" "$temporal"
+  ret=$?
+  if (( ret == 0 )) && mv -f -- "$temporal" "$salida"; then
     temporal=""
     echo "✔ Generado: $salida"
+  elif (( ret == 2 )); then
+    # El archivo tenía tipografías no soportadas o sin texto legible.
+    # El aviso explicativo ya fue mostrado en stderr.
+    rm -f -- "$temporal"
+    temporal=""
+    fallidos+=("$archivo")
   else
     rm -f -- "$temporal"
     temporal=""

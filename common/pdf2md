@@ -47,7 +47,10 @@
 #   LibreOffice un salto a propósito no se distingue de un corte normal y se
 #   une.) Un renglón que empieza con el número que sigue al del renglón de
 #   arriba ("3.1." y "3.2.") es siempre un salto a propósito, aunque el de
-#   arriba llegue casi al margen. Si los títulos del documento son más
+#   arriba llegue casi al margen. Para saber si dos renglones son del mismo
+#   párrafo se usa el interlineado real del documento cuando es mayor que el
+#   de md2pdf (por ejemplo, interlineado 1,5 en Google Docs). Si los
+#   títulos del documento son más
 #   chicos que los de Google Docs (LibreOffice, Word), el más grande pasa a
 #   ser #.
 #
@@ -2526,7 +2529,10 @@ def center_block(lines, left_margin, right_margin, body_sz):
         vis = [g for g in ln["glyphs"] if g["u"].strip() and g["u"] != "\u200b"]
         if not vis:
             continue
-        if vis[0]["x0"] < left_margin + 15.0 or abs((vis[0]["x0"] + vis[-1]["x1"]) / 2 - mid) > 8.0:
+        # (Un título centrado largo casi llega a los márgenes: alcanza con que
+        # no empiece en el margen, donde empieza un título alineado a la
+        # izquierda.)
+        if vis[0]["x0"] < left_margin + 5.0 or abs((vis[0]["x0"] + vis[-1]["x1"]) / 2 - mid) > 8.0:
             return None
         gs = sorted(ln["glyphs"], key=lambda g: g["x0"])
         txt = ""
@@ -3569,6 +3575,12 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                     steps[round(dy, 1)] += 1
         if steps:
             script_step = steps.most_common(1)[0][0] + 0.55 * body_font_sz
+            # El interlineado de referencia (line_step) es el de md2pdf. Un
+            # documento con más interlineado (por ejemplo, 1,5 en Google Docs:
+            # 19 puntos con letra de 11) tiene los renglones de un mismo párrafo
+            # justo en el límite, y cualquiera que lo pasara por redondeo salía
+            # como un párrafo aparte. Se usa el interlineado real si es mayor.
+            line_step = max(line_step, steps.most_common(1)[0][0])
     # Última tabla con grilla escrita: si la página siguiente empieza con una
     # tabla de las mismas columnas, es la continuación y se une a esta.
     last_grid = None

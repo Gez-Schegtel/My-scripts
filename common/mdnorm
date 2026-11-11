@@ -22,8 +22,12 @@
 #        - una tabla;
 #        - una cita, una lista dentro de una cita (con ">") y una cita dentro
 #          de un ítem de lista;
-#        - y antes y después de una imagen sola en su línea (si no, pandoc
-#          la pega al texto de arriba y de abajo).
+#        - antes y después de una imagen sola en su línea (si no, pandoc
+#          la pega al texto de arriba y de abajo);
+#        - y antes de un bloque de código (```) pegado a un texto, si la marca
+#          no está justo en la columna donde empieza ese texto (por ejemplo
+#          "  ```py" debajo de un párrafo): pandoc lo leería como código en
+#          línea y el bloque se perdería.
 #      Entre los ítems de una lista también agrega una línea en blanco (en
 #      las sublistas y en las listas dentro de una cita también), porque así
 #      el Markdown queda más prolijo. La lista sigue siendo una sola (no se
@@ -36,9 +40,18 @@
 #      de oración no se toca.
 #      Sublistas: pandoc solo anida una sublista si empieza al menos en la
 #      columna del texto del ítem de arriba (3 espacios debajo de "1. ");
-#      con menos, corta la lista en pedazos. Les agrega la sangría que falta.
-#      <br> fuera de las tablas: pandoc lo borra en el PDF y pega las
-#      palabras. Lo cambia por un salto de línea de Markdown (\ al final).
+#      con menos, corta la lista en pedazos. Les agrega la sangría que falta,
+#      y corre lo mismo todo lo que le pertenece al ítem (los renglones de
+#      abajo y su bloque de código, que conserva su sangría interna). Un
+#      bloque de código al margen termina la lista, como en pandoc.
+#      Ítem con sangría (una tabulación o 4 espacios) pegado a un párrafo:
+#      pandoc lo toma como más texto del párrafo y la viñeta se pierde; con
+#      una línea en blanco y esa sangría sería un bloque de código. La lista
+#      pasa al margen (los ítems de abajo siguen siendo hermanos o
+#      sublistas).
+#      <br> fuera de las tablas y del HTML (<div>, <details>...): pandoc lo
+#      borra en el PDF y pega las palabras. Lo cambia por un salto de línea
+#      de Markdown (\ al final).
 #
 #   2. Títulos. Pandoc tampoco reconoce un título (# Título) pegado al
 #      párrafo de arriba: sale como texto con el "#". Agrega la línea en
@@ -99,7 +112,8 @@
 #      comentario y lo borraría: "Unidad #3" quedaba "Unidad"); o si empieza
 #      con un carácter especial (# @ ` [ { * & ! % ? , | > o "- "; por
 #      ejemplo "tags: #etiqueta" quedaba vacío). No toca
-#      valores como true, 11pt o \today, ni las listas [a, b].
+#      valores como true, 11pt o \today, ni las listas [a, b] (pero sí
+#      "[a] b" o "[x] [y]", que no son una lista y pandoc no puede leer).
 #        title:Hola       ->  title: Hola       (faltaba el espacio)
 #        title: "Hola     ->  title: "Hola"     (faltaba cerrar la comilla)
 #      Si falta el --- de cierre, lo agrega en la primera línea en blanco o
@@ -113,9 +127,11 @@
 #
 #   6. Fórmulas con \( ... \) y \[ ... \] (las usan los chats de IA, LaTeX y
 #      algunos editores): pandoc solo entiende $ ... $ y $$ ... $$, así que
-#      salían como texto. Se cambian. Un \[...\] dentro de una línea se
-#      cambia solo si parece una fórmula, para no tocar corchetes escapados
-#      como \[1\].
+#      salían como texto. Se cambian, pero solo si parecen una fórmula
+#      (un comando de LaTeX, ^ _ = o llaves; entre \( \) también algo corto
+#      sin palabras, como x o f(x)), porque \( \) y \[ \] también son
+#      paréntesis y corchetes escapados en texto común: "\(ver abajo\)" o
+#      "\[1\]" no se tocan.
 #
 #   7. Notion:
 #        - Encabezado de la página: Notion no exporta una cabecera YAML sino
@@ -133,8 +149,10 @@
 #        - Callouts (<aside> ... </aside>): pasan a ser una cita (>); si no,
 #          pandoc borra las etiquetas y queda un párrafo común.
 #
-#   No toca: los bloques de código (``` o ~~~), el código en línea (`...`),
-#   las fórmulas $$...$$ ni los entornos de LaTeX (\begin...\end).
+#   No toca: los bloques de código (``` o ~~~, y los de 4 espacios o una
+#   tabulación después de una línea en blanco), el código en línea (`...`),
+#   las fórmulas $$...$$, los entornos de LaTeX (\begin...\end) ni los <br>
+#   dentro del HTML.
 #
 #   Cómo funciona: arma la versión normalizada, muestra los avisos y cuántas
 #   líneas cambian, y pregunta antes de guardar (y o ENTER aceptan). Las
@@ -152,13 +170,17 @@
 #   mdnorm -y nota.md         (-y o --yes: guarda sin preguntar)
 #
 # CÓDIGO DE SALIDA:
-#   0 si terminó bien; 1 si falló algún archivo, si quedaron imágenes sin
-#   encontrar o si falta una dependencia. Al final se listan los archivos con
-#   imágenes sin encontrar.
+#   0 si terminó bien; 1 si falló algún archivo, si alguno de los que pasaste
+#   no existe o no es un .md, si quedaron imágenes sin encontrar o si falta
+#   una dependencia. Al final se listan los archivos con imágenes sin
+#   encontrar. Un .md que no está en UTF-8 (por ejemplo, en Latin-1) no se
+#   toca y cuenta como fallido: el aviso dice cómo convertirlo con iconv.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - zsh y perl (vienen en Debian/Ubuntu; zsh: sudo apt install zsh)
 #   - diff (paquete diffutils, viene instalado) para mostrar los cambios.
+#   - iconv (paquete libc-bin, viene instalado) para comprobar que el .md
+#     esté en UTF-8.
 #   - git es opcional: si está, se usa para encontrar la raíz del repositorio
 #     y para mostrar los cambios con colores.
 # ==============================================================================
@@ -186,12 +208,18 @@ zparseopts -D -E -F -- y=opcion_y -yes=opcion_y v=opcion_v -verbose=opcion_v 2>/
 
 # --- 1. Lista de archivos -----------------------------------------------------
 archivos=()
+saltados=0
 if (( $# > 0 )); then
   for archivo in "$@"; do
-    if [[ ! -f "$archivo" ]]; then
+    if [[ -d "$archivo" ]]; then
+      echo "⚠️ Saltando '$archivo': es una carpeta, no un archivo."
+      (( saltados++ ))
+    elif [[ ! -f "$archivo" ]]; then
       echo "⚠️ Saltando '$archivo': no existe."
+      (( saltados++ ))
     elif [[ "${(L)archivo:e}" != (md|markdown) ]]; then
       echo "⚠️ Saltando '$archivo': no es un archivo Markdown (.md)."
+      (( saltados++ ))
     else
       archivos+=("$archivo")
     fi
@@ -199,8 +227,11 @@ if (( $# > 0 )); then
 else
   archivos=( *.(#i)(md|markdown)(N.) )
 fi
+# Si pediste archivos y ninguno sirvió, es un error (código 1); si no pediste
+# ninguno y en la carpeta no hay .md, no hay nada que hacer (código 0).
 if (( ${#archivos[@]} == 0 )); then
   echo "No se encontraron archivos Markdown para normalizar."
+  (( saltados > 0 )) && exit 1
   exit 0
 fi
 
@@ -352,21 +383,44 @@ sub imagenes_en_linea {
 
 # Fórmulas con \( ... \) y \[ ... \] (las escriben los chats de IA, LaTeX y
 # varios editores): el Markdown de pandoc solo entiende $ ... $ y $$ ... $$.
-# Un \[...\] se cambia solo si parece una fórmula (tiene \ ^ _ = o {), así
-# no se tocan corchetes escapados como \[1\].
+# Pero \( \) y \[ \] también son paréntesis y corchetes escapados en texto
+# común (algunos programas los escriben así: "\(ver abajo\)", "\[1\]"), y eso
+# no se toca. Se cambian solo si parecen una fórmula (ver parece_formula).
 sub formula {   # (delimitador, contenido) -> fórmula de pandoc, sin espacios en los bordes
   my ($m, $f) = @_;
   $f =~ s/^\s+|\s+$//g;
   return "$m$f$m";
 }
+# Una fórmula tiene un comando de LaTeX (\alpha, \frac), ^ _ = o llaves. Entre
+# \( \) también vale algo corto sin palabras (x, n, f(x), a + b, O(n log n)).
+# No lo es si tiene código (`...`) o escapes de Markdown (\# \* \[...), ni si
+# tiene palabras de texto ("\(current, previous, or next line\)").
+# Si en el documento algún \( \) tiene texto común, el documento usa \( \)
+# como paréntesis escapados (hay programas que escapan todos): ahí solo
+# cuentan los que tienen señales claras de fórmula (\alpha, ^ _ = o llaves),
+# no "\(2261\)" ni "\(v1.2\)". Se calcula al leer el archivo.
+my $parentesis_escapados = 0;
+sub parece_formula {
+  my ($f, $en_linea) = @_;
+  return 0 if $f =~ /`/ || $f =~ /\\[#*`\[\]()|<>!~]/;
+  return 1 if $f =~ /\\[A-Za-z]{2,}|[\^_=\x{7B}\x{7D}]/;
+  return 0 if !$en_linea || $parentesis_escapados;
+  for my $p ($f =~ /\p{L}{3,}/g) {
+    return 0 unless $p =~ /^(?:log|ln|sin|cos|tan|max|min|exp|lim|det|mod|gcd|sup|inf|arg)$/;
+  }
+  return $f =~ /\S/ ? 1 : 0;
+}
 sub formulas_en_linea {
   my ($l) = @_;
   return $l unless $l =~ /\\[(\[]/;
-  my $simbolo = qr/[\\^_=\x{7B}]/;   # \ ^ _ = {
+  # (El contenido se guarda antes de mirar si parece una fórmula: otra
+  # búsqueda borraría $3 y $4, y la fórmula quedaba vacía: "\[ y = 2 \]"
+  # salía "$$$$".)
   $l =~ s{(`+)(.*?)\1|\\\((.+?)\\\)|\\\[(.+?)\\\]}{
-    defined $1 ? "$1$2$1"
-    : defined $3 ? formula('$', $3)
-    : $4 =~ $simbolo ? formula('$$', $4) : $&
+    my ($todo, $cod, $marca, $paren, $corch) = ($&, $2, $1, $3, $4);
+    defined $marca ? "$marca$cod$marca"
+    : defined $paren ? (parece_formula($paren, 1) ? formula('$', $paren) : $todo)
+    : parece_formula($corch, 0) ? formula('$$', $corch) : $todo
   }ge;
   return $l;
 }
@@ -435,6 +489,14 @@ chomp @in;
 # Marca BOM de UTF-8 (la ponen algunos editores de Windows): se saca para
 # analizar y se vuelve a poner al final.
 my $bom = (@in && $in[0] =~ s/^\x{FEFF}//) ? "\x{FEFF}" : "";
+for my $x (@in) {
+  (my $sin = $x) =~ s/(`+).*?\1//g;                   # sin el código en línea
+  while ($sin =~ /\\\((.+?)\\\)/g) {
+    my $f = $1;
+    if ($f !~ /\\[A-Za-z]{2,}|[\^_=\x{7B}\x{7D}]/ && $f =~ /\p{L}{4,}/) { $parentesis_escapados = 1; last; }
+  }
+  last if $parentesis_escapados;
+}
 
 # --- Encabezado de Notion ---
 # Notion exporta la página sin cabecera YAML: el título como "# Título" y,
@@ -481,6 +543,25 @@ my $bom = (@in && $in[0] =~ s/^\x{FEFF}//) ? "\x{FEFF}" : "";
 # listas, los valores anidados y los bloques (| o >) quedan como están.
 sub aviso { warn "   ⚠️  $_[0]\n"; $avisos++; }
 
+# Una lista [a, b] o un {...} de YAML: el corchete (o la llave) del principio
+# se cierra justo al final. "[system] [--source <path>]" no lo es (son dos) y
+# pandoc no puede leerlo: hay que ponerlo entre comillas.
+sub lista_yaml {
+  my ($t) = @_;
+  return 0 unless $t =~ /^[\[\x{7B}]/;
+  my ($prof, $comilla) = (0, "");
+  my @c = split //, $t;
+  for my $k (0..$#c) {
+    my $ch = $c[$k];
+    if ($comilla) { $comilla = "" if $ch eq $comilla; next; }
+    if ($ch eq '"' || $ch eq "'") { $comilla = $ch; next; }
+    $prof++ if $ch eq "[" || $ch eq "\x{7B}";
+    $prof-- if $ch eq "]" || $ch eq "\x{7D}";
+    return $k == $#c ? 1 : 0 if $prof == 0;
+  }
+  return 0;
+}
+
 sub arreglar_valor {    # devuelve el valor arreglado, o undef si está bien
   my ($v) = @_;
   my $t = $v; $t =~ s/\s+$//;
@@ -496,7 +577,7 @@ sub arreglar_valor {    # devuelve el valor arreglado, o undef si está bien
     my $n = () = $sin =~ /'/g;
     return $n % 2 ? qq{$t'} : undef;
   }
-  return undef if $t =~ /^\[.*\]$/ || $t =~ /^\{.*\}$/;  # lista [a, b] o {...}
+  return undef if lista_yaml($t);                        # lista [a, b] o {...}
   my $hace_falta =
        $t =~ /:\s/ || $t =~ /:$/         # dos puntos seguidos de espacio, o al final
     || $t =~ /\s#/                       # " #": el resto sería un comentario
@@ -572,8 +653,14 @@ my ($cita_lista, $cita_previa) = (0, "");   # lista dentro de la cita / línea a
 my $item  = qr/^\s*(?:[-*+]|\d+[.)])\s+\S/;
 # Lista numerada: hasta 3 cifras, así un año al principio de una línea
 # ("1810. Después...") no se toma como el comienzo de una lista.
-my $item_inicio = qr/^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+\S/;
+# Hasta 3 espacios de sangría: una tabulación ya son 4 columnas (con una línea
+# en blanco antes, pandoc lo leería como un bloque de código).
+my $item_inicio = qr/^ {0,3}(?:[-*+]|\d{1,3}[.)])\s+\S/;
 my $cita  = qr/^\s{0,3}>/;
+my $en_sangrado = 0;  # dentro de un bloque de código con sangría (4 espacios o una tabulación)
+my $html_prof = 0;    # etiquetas de bloque HTML abiertas (<div>, <details>...)
+my $bloques_html = qr/div|details|summary|table|thead|tbody|tr|td|th|center|section|figure|figcaption|blockquote|ul|ol|li|dl|p|header|footer|nav|article|picture/;
+my $desplazo_cod = 0;  # cuánto se corre el bloque de código abierto (está dentro de un ítem corrido)
 
 # Si el archivo usa saltos de línea de Windows (\r\n), la línea agregada también.
 my $vacia = (@in && $in[0] =~ /\r$/) ? "\r" : "";
@@ -602,6 +689,22 @@ sub sangrar_item {
   return $l if $nueva == $w;
   $l =~ s/^\s*/" " x $nueva/e;
   return $l;
+}
+# Lo que pertenece a un ítem (los renglones que siguen, su código, una cita)
+# se corre lo mismo que el ítem: si no, queda desalineado y pandoc lo saca
+# del ítem, o el código pierde su sangría. Pertenece al ítem más profundo
+# cuya columna de texto (la original) no supera su sangría.
+sub desplazo_de {
+  my ($w) = @_;
+  for my $n (reverse @niveles) { return $n->[2] - $n->[1] if $w >= $n->[1]; }
+  return 0;
+}
+sub correr {
+  my ($l, $d) = @_;
+  return $l if !$d || $l !~ /\S/;
+  my ($e, $resto) = $l =~ /^([ \t]*)(.*)$/s;
+  my $w = ancho($e) + $d;
+  return (" " x ($w < 0 ? 0 : $w)) . $resto;
 }
 
 # Imagen sola en su línea: pandoc la pega al texto de arriba y de abajo si no
@@ -671,14 +774,41 @@ for (my $i = 0; $i < @in; $i++) {
   # Se cierra con la misma marca (``` o ~~~), de al menos el mismo largo y
   # sin nada después: "```python" o un ~~~ dentro de un ``` no lo cierran.
   if ($en_codigo) {
-    push @out, $l;
     $en_codigo = 0 if $l =~ /^\s*(`+|~+)\s*$/ && substr($1, 0, 1) eq substr($cerca, 0, 1) && length($1) >= length($cerca);
+    push @out, correr($l, $desplazo_cod);
     next;
   }
-  if ($l =~ /^\s*(```+|~~~+)/) { $cerca = $1; $en_codigo = 1; push @out, $l; next; }
+  if ($l =~ /^(\s*)(```+|~~~+)/) {
+    # Un bloque de código sigue dentro de un ítem solo si empieza en la columna
+    # del texto del ítem (3 espacios debajo de "1. ", 2 debajo de "- "). Más a
+    # la izquierda, para pandoc la lista terminó: lo que venga después (por
+    # ejemplo "  * otra") es una lista nueva y no se le agrega sangría.
+    my ($w, $marca) = (ancho($1), $2);   # (se guardan ya: otra búsqueda borra $1 y $2)
+    if ($en_lista) {
+      pop @niveles while @niveles && $niveles[-1][1] > $w;
+      if (!@niveles) { $en_lista = 0; }
+    }
+    # Pegado a un texto, pandoc solo reconoce el bloque si la marca está justo
+    # en la columna donde empieza ese texto (al margen debajo de un párrafo,
+    # en la columna del texto debajo de un ítem). Con otra sangría lo toma
+    # como código en línea ("py code") y el bloque se pierde. Con una línea
+    # en blanco antes lo reconoce siempre.
+    my $col = ($en_lista && @niveles) ? $niveles[-1][1] : 0;
+    if (!$en_cita && $w != $col && ($out[-1] // "") =~ /\S/ && ($out[-1] // "") !~ /^\s*(?:```|~~~|#|\|)/) {
+      blanco_antes();
+    }
+    $desplazo_cod = $en_lista ? desplazo_de($w) : 0;
+    $cerca = $marca; $en_codigo = 1; push @out, correr($l, $desplazo_cod); next;
+  }
+
+  # Renglones que pertenecen a un ítem que se corrió (ver desplazo_de). Los
+  # ítems se corren aparte, en sangrar_item.
+  if ($en_lista && $l =~ /^\s/ && ($en_math || $en_latex || $l !~ $item)) {
+    $l = correr($l, desplazo_de(ancho(($l =~ /^(\s*)/)[0])));
+  }
 
   # \[ y \] solos en su línea: fórmula en bloque, se cambian por $$.
-  if ($l =~ /^(\s*)\\[\[\]]\s*$/) { my $cr = $l =~ /\r$/ ? "\r" : ""; $l = "$1\$\$$cr"; }
+  if ($l =~ /^(\s*)\\[\[\]]\s*$/) { my $sang = $1; my $cr = $l =~ /\r$/ ? "\r" : ""; $l = "$sang\$\$$cr"; }
 
   # Fórmulas $$ ... $$ y entornos de LaTeX
   if ($en_math) { push @out, $l; my $k = () = $l =~ /\$\$/g; $en_math = 0 if $k % 2; next; }
@@ -688,6 +818,18 @@ for (my $i = 0; $i < @in; $i++) {
     $en_latex = (() = $l =~ /\\begin\{/g) - (() = $l =~ /\\end\{/g);
     $en_latex = 0 if $en_latex < 0;
     push @out, $l; next;
+  }
+
+  # Bloque de código con sangría: después de una línea en blanco, fuera de una
+  # lista y de una cita, un renglón con 4 espacios (o una tabulación) es
+  # código para pandoc, aunque empiece con "- " o "1. ". No se toca nada
+  # hasta el primer renglón con menos sangría.
+  if ($l =~ /\S/) {
+    my ($ind) = $l =~ /^(\s*)/;
+    if (ancho($ind) >= 4 && !$en_lista && !$en_cita && ($en_sangrado || ($out[-1] // "") !~ /\S/)) {
+      $en_sangrado = 1; push @out, $l; next;
+    }
+    $en_sangrado = 0;
   }
 
   # Callout de Notion (<aside> ... </aside>): pandoc borra las etiquetas en el
@@ -754,6 +896,18 @@ for (my $i = 0; $i < @in; $i++) {
   if ($es_titulo) {                       # título: siempre con una línea en blanco antes
     blanco_antes();
     $en_lista = 0; $en_cita = 0; @niveles = ();
+  } elsif (!$en_lista && !$en_cita && $l =~ $item && ancho(($l =~ /^(\s*)/)[0]) >= 4
+           && ($out[-1] // "") =~ /\S/ && ($out[-1] // "") !~ /^\s*(?:[#>|]|```|~~~)/) {
+    # Ítem con sangría (4 espacios o una tabulación) pegado a un párrafo: para
+    # pandoc es más texto del párrafo y la viñeta se pierde ("...test. * Buscar
+    # qué son"). Con una línea en blanco y esa sangría sería un bloque de
+    # código, así que la lista empieza en el margen. Un nivel "virtual" con la
+    # sangría original hace que los ítems de abajo con la misma sangría queden
+    # como hermanos y los más sangrados, como sublista.
+    blanco_antes();
+    @niveles = ([-1, ancho(($l =~ /^(\s*)/)[0]), 0]);
+    $en_lista = 1; $en_cita = 0;
+    $l = sangrar_item($l);
   } elsif ($l =~ $item) {
     if (!$en_lista && $l =~ $item_inicio) { blanco_antes(); @niveles = (); }
     # Ítems separados: una línea en blanco entre ítem e ítem (también antes
@@ -781,7 +935,7 @@ for (my $i = 0; $i < @in; $i++) {
     elsif ($dentro =~ /\S/ && $dentro !~ /^\s/ && $cita_previa !~ /\S/) { $cita_lista = 0; }
     $cita_previa = $dentro;
     $en_cita = 1;
-  } elsif ($en_lista && $l =~ /^\S/ && txt($l) !~ /^\p{Ll}/
+  } elsif ($en_lista && $l =~ /^\S/ && $l !~ /^\p{Ll}/
            && ($out[-1] // "") =~ /[.!?:;)\]"'»][*_`]*\s*\r?$/) {
     # Párrafo pegado al último ítem de una lista: pandoc lo toma como parte
     # del ítem (una línea "perezosa") y lo mete adentro de la lista. Si el
@@ -799,6 +953,16 @@ for (my $i = 0; $i < @in; $i++) {
   }
 
   my $sigue_texto = $i + 1 < @in && $in[$i+1] =~ /\S/;
+  # Dentro de un bloque HTML (<div>, <details>, <table>...) los <br> son parte
+  # de ese HTML y no se tocan. Se lleva la cuenta de las etiquetas de bloque
+  # abiertas y cerradas.
+  my $antes_html = $html_prof;
+  $html_prof += () = $l =~ /<(?:$bloques_html)\b[^>]*(?<!\/)>/gi;
+  $html_prof -= () = $l =~ /<\/(?:$bloques_html)\s*>/gi;
+  $html_prof = 0 if $html_prof < 0;
+  if ($antes_html > 0 || $html_prof > 0 || $l =~ /^\s*<(?:$bloques_html)\b/i) {
+    push @out, imagenes_en_linea($l); next;
+  }
   push @out, saltos_html(imagenes_en_linea($l), $sigue_texto, $es_titulo);
 }
 $out[0] = $bom . $out[0] if @out;
@@ -826,8 +990,15 @@ temporal=""
 trap 'rm -f -- "$cuenta" ${temporal:+"$temporal"}' EXIT
 trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
 for archivo in "${archivos[@]}"; do
-  temporal="$(mktemp --suffix=.md)"
   echo "── $archivo"
+  # Un .md que no está en UTF-8 (por ejemplo, en Latin-1) no se toca: al
+  # guardarlo se mezclarían dos codificaciones. Se avisa cómo convertirlo.
+  if ! iconv -f UTF-8 -t UTF-8 -- "$archivo" >/dev/null 2>&1; then
+    echo "   ❌ No está en UTF-8, así que no lo toqué. Para convertirlo:"
+    echo "      iconv -f latin1 -t utf-8 -- \"$archivo\" > nuevo.md"
+    fallidos+=("$archivo"); continue
+  fi
+  temporal="$(mktemp --suffix=.md)"
   if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
        FALTAN="$cuenta" NOMBRE_MD="${archivo:t}" perl -CSD -e "$NORMALIZAR" < "$archivo" > "$temporal"; then
     echo "   ❌ Error al normalizar."
@@ -893,3 +1064,6 @@ if (( ${#fallidos[@]} > 0 )); then
   echo "⚠️ Fallaron ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}"
 fi
 (( ${#fallidos[@]} + ${#con_faltantes[@]} == 0 )) || exit 1
+# Algún archivo pedido se saltó (no existía o no era un .md): código 1.
+(( saltados > 0 )) && exit 1
+exit 0

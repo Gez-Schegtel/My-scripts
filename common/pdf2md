@@ -8,12 +8,78 @@
 #   de md2pdf. Está pensado principalmente para recuperar el Markdown original
 #   de los PDF generados con mi configuración de estilo ("pandoc -d estilo"),
 #   incluyendo la cabecera YAML (title, subtitle, author, date, toc, márgenes,
-#   tipografías, interlineado...), títulos, listas, tablas (simples y de varias
-#   páginas, incluidas las de grilla completa de Google Docs, Word o
-#   LibreOffice, con celdas combinadas y viñetas dentro de las celdas), bloques de código con su lenguaje, código en línea, fórmulas en
-#   LaTeX ($...$ y $$...$$), citas, enlaces, emojis de Noto Color Emoji e
-#   imágenes con sus atributos ({.derecha width=25%}, etc.). También funciona
-#   con PDF de texto comunes.
+#   tipografías, interlineado...), títulos, listas (con su anidamiento y las
+#   tareas - [ ] / - [x]), tablas (simples y de varias páginas, incluidas
+#   las de grilla completa de Google Docs, Word, LibreOffice o un navegador,
+#   con celdas combinadas y viñetas dentro de las celdas), bloques de código
+#   con su lenguaje, código en línea, fórmulas en LaTeX ($...$ y $$...$$),
+#   citas, enlaces, emojis de Noto Color Emoji e imágenes con sus atributos
+#   ({.derecha width=25%}, etc.). También funciona con PDF de texto comunes.
+#
+#   Superíndices, subíndices y notas al pie: los superíndices y subíndices
+#   del texto (250 m², H₂O, 1º) se escriben como ^2^ y ~2~, la forma de
+#   pandoc. Las notas al pie (al final de la página, cada una con el número
+#   de su llamada en el texto) se escriben como [^1] en el texto y
+#   "[^1]: texto de la nota" al final del documento. Los números de página
+#   sueltos al pie (LibreOffice, Word) se descartan y las ligaduras (ﬁ, ﬂ)
+#   se pasan a letras comunes.
+#
+#   Saltos de línea: en los PDF que no son de LaTeX (Google Docs, Word,
+#   LibreOffice, un navegador), un renglón corto solo se toma como un salto
+#   de línea a propósito si la primera palabra del renglón siguiente entraba
+#   en el espacio que quedó; si no entraba, es el corte normal del renglón y
+#   se une al párrafo. Lo mismo con los títulos largos que ocupan varios
+#   renglones, que quedan en un solo título. (En un párrafo justificado de
+#   LibreOffice un salto a propósito no se distingue de un corte normal y se
+#   une.) Si los títulos del documento son más chicos que los de Google Docs
+#   (LibreOffice, Word), el más grande pasa a ser #.
+#
+#   Títulos de los PDF que no son de LaTeX: además de los de letra más grande
+#   o en negrita, se reconocen los subtítulos numerados en letra más chica
+#   que el texto ("1. Competencias Cardinales"), los renglones cortos sueltos
+#   con más espacio arriba y abajo y sin punto final ("Escala de Impacto"), y
+#   los que figuran en el índice del PDF aunque la letra sea apenas más
+#   grande (Google Docs lo arma con los estilos de título). Un renglón en
+#   negrita que empieza con un número solo es un título si está en el margen:
+#   corrido, es un ítem de una lista numerada. Los títulos centrados de la
+#   carátula (primera página) se escriben como un bloque centrado de LaTeX
+#   (\begin{center}), con la letra grande, porque el Markdown no puede
+#   centrar un título. Un renglón suelto justo antes de una imagen (como el
+#   título de un gráfico) lleva antes \needspace{...}, definido en el
+#   estilo, para que no quede solo al pie de la página con la imagen en la
+#   siguiente.
+#
+#   Ida y vuelta: con un PDF de md2pdf, el .md que genera vuelve a dar el
+#   mismo PDF (idéntico) si se exporta con la misma versión del estilo con
+#   que se hizo el original. Si el estilo cambió después (otra separación de
+#   listas, otra letra...), el contenido es el mismo pero los saltos de página
+#   pueden caer en otro lugar.
+#   Un renglón de un párrafo que en el PDF empieza con "2.", "-", "#" o ">"
+#   se escapa ("2\. Texto") para que siga siendo un párrafo y no se lea como
+#   una lista, un título o una cita. Las tablas que siguen en otra página se
+#   unen, repitan o no el encabezado; si una fila quedó partida entre las dos
+#   páginas (el texto de arriba queda cortado y sigue en minúscula), se
+#   vuelve a unir en una sola fila. Las celdas con un "-" lo conservan. Si
+#   una celda tiene varias viñetas, la tabla se escribe como "grid table" de
+#   pandoc (con bordes de +, - y |), que admite listas dentro de las celdas:
+#   cada ítem va en un solo renglón (el estilo lee el Markdown con
+#   hard_line_breaks) y los anchos conservan la proporción del PDF.
+#
+#   Cómo maneja las listas: el nivel de cada ítem sale de su posición en el
+#   PDF comparada con la de los ítems de arriba, así que funciona aunque el
+#   programa que hizo el PDF corra las listas del margen. Las sublistas
+#   numeradas (y las viñetas debajo de un número) llevan 4 espacios, que es
+#   lo que necesita pandoc para anidarlas. Dos ítems con la viñeta o el
+#   número en la misma posición son hermanos aunque el texto empiece en otro
+#   lugar (en Google Docs varía según el ancho del número). Los renglones de
+#   un ítem que se corta siguen siendo parte del ítem mientras empiecen a la
+#   derecha de la viñeta o del número; un párrafo aparte que empieza a la
+#   altura del texto del ítem (después de un espacio o en la página
+#   siguiente) es otro párrafo del mismo ítem y lleva su sangría. Se
+#   reconocen las viñetas de LaTeX,
+#   Google Docs, Word y LibreOffice (•, ●, ○, ◦, ■, ▪, ‣, ➢, ❖ y la "–" con
+#   sangría del segundo nivel), las de las letras de símbolos (OpenSymbol,
+#   Symbol, Wingdings) y las que los navegadores dibujan como figuras.
 #
 #   Cómo maneja las imágenes:
 #     - Los emojis incrustados por LuaLaTeX (Noto Color Emoji) se reconocen y
@@ -35,7 +101,8 @@
 #     4. Si un PDF contiene tipografías no soportadas, caracteres sin texto
 #        legible o no tiene capa de texto (por ejemplo si está escaneado), el
 #        script avisa y no genera el archivo para evitar producir un documento
-#        incorrecto.
+#        incorrecto. Lo mismo si el PDF tiene contraseña para abrirlo, está
+#        dañado o no es un PDF (un archivo vacío o con otro contenido).
 #     5. Si un archivo falla, sigue con los demás y al final informa cuáles
 #        no se pudieron convertir.
 #
@@ -49,8 +116,9 @@
 #   pdf2md -h                 (-h o --help: muestra esta ayuda)
 #
 # CÓDIGO DE SALIDA:
-#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló o si
-#   falta alguna dependencia.
+#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló, si
+#   alguno de los que pasaste no existe o no es un PDF, o si falta alguna
+#   dependencia.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - zsh (El script está escrito específicamente para Z shell)
@@ -73,7 +141,8 @@ Uso: pdf2md [-y] [-h] [archivo.pdf ...]
 
 Convierte archivos PDF (.pdf) a Markdown (.md), recuperando la estructura,
 cabecera YAML, tablas (también las de Google Docs, Word o LibreOffice),
-bloques de código, fórmulas, citas, emojis e imágenes.
+bloques de código, fórmulas, citas, superíndices (^2^), subíndices (~2~),
+notas al pie ([^1]), emojis e imágenes.
 Si no le pasás ningún archivo, busca todos los .pdf de la carpeta actual.
 Si un archivo contiene tipografías no soportadas, caracteres sin texto legible
 o carece de capa de texto (escaneado), avisa y no realiza la conversión.
@@ -119,12 +188,18 @@ fi
 # --- 1. Construimos la lista de archivos a convertir --------------------------
 archivos=()
 
+saltados=0
 if (( $# > 0 )); then
   for archivo in "$@"; do
-    if [[ ! -f "$archivo" ]]; then
+    if [[ -d "$archivo" ]]; then
+      echo "⚠️ Saltando '$archivo': es una carpeta, no un archivo."
+      (( saltados++ ))
+    elif [[ ! -f "$archivo" ]]; then
       echo "⚠️ Saltando '$archivo': no existe."
+      (( saltados++ ))
     elif [[ "${(L)archivo:e}" != pdf ]]; then
       echo "⚠️ Saltando '$archivo': no es un archivo PDF (.pdf)."
+      (( saltados++ ))
     else
       archivos+=("$archivo")
     fi
@@ -134,8 +209,11 @@ else
 fi
 
 # --- 2. Si no hay archivos, salimos -------------------------------------------
+# Si pediste archivos y ninguno sirvió, es un error (código 1); si no pediste
+# ninguno y en la carpeta no hay PDF, no hay nada que hacer (código 0).
 if (( ${#archivos[@]} == 0 )); then
   echo "No se encontraron archivos PDF para convertir."
+  (( saltados > 0 )) && exit 1
   exit 0
 fi
 
@@ -186,6 +264,9 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 class UnsupportedFontError(Exception):
     pass
+
+
+SYMBOL_FONT_RE = re.compile(r"OpenSymbol|Symbol|Wingdings|Webdings|Dingbats", re.IGNORECASE)
 
 NOTO_EMOJI_TTF = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
 EMOJI_CACHE_PATH = os.path.expanduser("~/.cache/pdf2md_noto_emoji.json")
@@ -594,6 +675,13 @@ def convert_math_glyphs(glyphs, y_base):
             while i < n and "Math" not in glyphs[i]["fn"] and glyphs[i]["sz"] >= 8.8:
                 txt_glyphs.append(glyphs[i])
                 i += 1
+            if not txt_glyphs:
+                # Una letra chica de texto que no está corrida (no es
+                # exponente ni subíndice): se escribe tal cual.
+                out.append(u.replace("%", r"\%"))
+                prev_x1 = g["x1"]
+                i += 1
+                continue
             t_parts = []
             px1 = None
             for tg in txt_glyphs:
@@ -759,7 +847,13 @@ def format_inline_line(glyphs, in_heading=False, is_quote_first_line=False):
         st = styles[i]
         uri = glyphs[i].get("link_uri")
         j = i + 1
-        while j < len(glyphs) and styles[j] == st and glyphs[j].get("link_uri") == uri:
+        while (
+            j < len(glyphs)
+            and styles[j] == st
+            and glyphs[j].get("link_uri") == uri
+            and (st == "math" or glyphs[j].get("script") == glyphs[i].get("script"))
+            and glyphs[j].get("fn_ref") == glyphs[i].get("fn_ref")
+        ):
             if st == "math" and glyphs[j]["x0"] - glyphs[j - 1]["x1"] > 15.0:
                 break
             j += 1
@@ -786,6 +880,11 @@ def format_inline_line(glyphs, in_heading=False, is_quote_first_line=False):
                 parts.append(g["u"])
                 px1 = max(px1 or 0, g["x1"])
             code_txt = "".join(parts)
+            if not code_txt.strip():
+                # Un espacio suelto en letra de código no es código: "` `"
+                # solo ensuciaría el texto.
+                rendered_runs.append({"st": "normal", "uri": uri, "text": " ", "raw": " ", "x0": rx0, "x1": rx1})
+                continue
             rendered_runs.append({"st": "mono", "uri": uri, "text": f"`{code_txt}`", "raw": code_txt, "x0": rx0, "x1": rx1})
         else:
             parts = []
@@ -806,6 +905,15 @@ def format_inline_line(glyphs, in_heading=False, is_quote_first_line=False):
                 px1 = max(px1 or 0, g["x1"])
                 prev_u = g["u"]
             txt = "".join(parts)
+            script = r_glyphs[0].get("script")
+            if r_glyphs[0].get("fn_ref"):
+                # Llamada a una nota al pie.
+                txt = f"[^{r_glyphs[0]['fn_ref']}]"
+            elif script and txt.strip():
+                # Superíndice (^2^) o subíndice (~2~) de pandoc: adentro no
+                # puede haber espacios sin escapar.
+                mark = "^" if script == "sup" else "~"
+                txt = mark + txt.strip().replace(" ", "\\ ") + mark
             rendered_runs.append({"st": st, "uri": uri, "text": txt, "raw": txt, "x0": rx0, "x1": rx1})
 
     merged = list(rendered_runs)
@@ -987,6 +1095,331 @@ def format_inline_line(glyphs, in_heading=False, is_quote_first_line=False):
     return res
 
 
+def small_mark_box(el, H):
+    # Caja de una figura chica (de 1,5 a 7 pt, casi cuadrada y oscura): los
+    # navegadores dibujan así las viñetas de las listas (círculo, disco o
+    # cuadrado), sin un carácter que se pueda leer. Devuelve (x0, y0, x1, y1)
+    # o None. Se miran todos los puntos, también los de las curvas.
+    col = el.get("color", "0")
+    try:
+        comps = [float(c) for c in col.split()]
+    except ValueError:
+        return None
+    if comps and min(comps) > 0.6 and len(comps) != 4:
+        return None                            # blanco o un gris muy claro
+    tr = [float(x) for x in el.get("transform", "1 0 0 1 0 0").split()]
+    xs, ys = [], []
+    for c in el:
+        for kx, ky in (("x", "y"), ("x1", "y1"), ("x2", "y2"), ("x3", "y3")):
+            if kx in c.attrib and ky in c.attrib:
+                x, y = float(c.get(kx)), float(c.get(ky))
+                xs.append(tr[0] * x + tr[2] * y + tr[4])
+                ys.append(H - (tr[1] * x + tr[3] * y + tr[5]))
+    if not xs:
+        return None
+    w, h = max(xs) - min(xs), max(ys) - min(ys)
+    if 1.5 <= w <= 7.0 and 1.5 <= h <= 7.0 and abs(w - h) <= 1.5:
+        return (min(xs), min(ys), max(xs), max(ys))
+    return None
+
+
+LIGATURES = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"}
+
+
+SCRIPT_SKIP_CHARS = set("•●○◦■▪▫►▸‣⁃➢❖□☐⊠☒☑∗·–")
+
+
+def can_be_script(g):
+    """Un glifo que puede ser superíndice o subíndice de texto (no de fórmulas)."""
+    fn = g["fn"]
+    return not (
+        g.get("is_emoji")
+        or "Math" in fn
+        or g["u"] in SCRIPT_SKIP_CHARS
+        or any(t in fn for t in ("Mono", "Courier", "Consolas", "Menlo", "Monaco", "Fixed", "Code", "Typewriter"))
+    )
+
+
+def line_body(glyphs):
+    """Tamaño y altura de la base del texto principal de un renglón."""
+    vis = [g for g in glyphs if g["u"].strip() and not g.get("is_emoji")]
+    if not vis:
+        return None, None
+    sz = sorted(g["sz"] for g in vis)[len(vis) // 2]
+    ys = sorted(g["y"] for g in vis if g["sz"] >= sz * 0.9)
+    return sz, ys[len(ys) // 2]
+
+
+def attach_scripts(lines):
+    # Superíndices y subíndices de texto (250 m², H₂O, la llamada a una nota
+    # al pie, "1º"): son letras más chicas, corridas hacia arriba o hacia
+    # abajo. Si se corren más que la tolerancia con la que se arman los
+    # renglones, quedan en un renglón propio, fuera de lugar (o hasta parecen
+    # un título). Acá se devuelven a su renglón y se marcan ("sup" o "sub")
+    # para escribirlos como ^2^ o ~2~, la forma de pandoc.
+    bodies = []
+    for ln in lines:
+        sz, base = line_body(ln["glyphs"])
+        vis = [g for g in ln["glyphs"] if g["u"].strip()]
+        bodies.append((sz, base, vis))
+
+    def host_for(run, skip):
+        # Renglón al que pertenece un grupo de glifos chicos (por ejemplo, el
+        # "10" de una nota): el texto tiene que ser bastante más grande, el
+        # grupo tiene que estar corrido hacia arriba (o hacia abajo) en la
+        # medida justa y caer en un hueco del renglón, sin pisar ninguna letra.
+        r_x0 = run[0]["x0"]
+        r_x1 = max(g["x1"] for g in run)
+        r_y = run[0]["y"]
+        r_sz = max(g["sz"] for g in run)
+        best = None
+        for k, (sz, base, vis) in enumerate(bodies):
+            if k == skip or sz is None or len(vis) < 3 or r_sz > sz * 0.86:
+                continue
+            dy = r_y - base
+            if 0.15 * sz <= dy <= 0.65 * sz:
+                kind = "sup"
+            elif -0.4 * sz <= dy <= -0.08 * sz:
+                kind = "sub"
+            else:
+                continue
+            x_ini = min(v["x0"] for v in vis)
+            x_fin = max(v["x1"] for v in vis)
+            # (puede ir pegado antes del texto, como el número de una nota al pie)
+            if not (x_ini - 0.8 * sz <= r_x1 and r_x0 <= x_fin + 0.6 * sz):
+                continue
+            if any(v["x0"] < r_x1 - 0.3 and v["x1"] > r_x0 + 0.3 for v in vis):
+                continue
+            if best is None or abs(dy) < best[2]:
+                best = (k, kind, abs(dy))
+        return best
+
+    moved = set()
+    for k, (sz, base, vis) in enumerate(bodies):
+        # Un renglón de pocos glifos chicos puede ser solo superíndices. Puede
+        # mezclar los de una fórmula ($x^2$) con los del texto (la llamada a
+        # una nota) si quedan a la misma altura: los de la fórmula también
+        # vuelven a su renglón, pero sin marcar y con su altura, porque de
+        # ellos se ocupa la parte que arma las fórmulas.
+        if not vis or len(vis) > 8 or not all(can_be_script(g) or "Math" in g["fn"] for g in vis):
+            continue
+        runs = []
+        for g in sorted(vis, key=lambda g: g["x0"]):
+            if runs and g["x0"] - runs[-1][-1]["x1"] < 1.5 and abs(g["y"] - runs[-1][-1]["y"]) < 0.5:
+                runs[-1].append(g)
+            else:
+                runs.append([g])
+        hosts = [host_for(run, k) for run in runs]
+        if any(h is None for h in hosts):
+            continue
+        for run, (hk, kind, _) in zip(runs, hosts):
+            for g in run:
+                if "Math" not in g["fn"]:
+                    g["script"] = kind
+                    g["y"] = bodies[hk][1]
+                lines[hk]["glyphs"].append(g)
+        moved.add(k)
+
+    # Los que ya quedaron dentro del renglón (porque se corren poco, como
+    # los subíndices) se reconocen por el tamaño y la altura.
+    for k, ln in enumerate(lines):
+        if k in moved:
+            continue
+        sz, base = line_body(ln["glyphs"])
+        if sz is None:
+            continue
+        for g in ln["glyphs"]:
+            if g.get("script") or not g["u"].strip() or not can_be_script(g) or g["sz"] > sz * 0.86:
+                continue
+            dy = g["y"] - base
+            if dy >= 0.15 * sz:
+                g["script"] = "sup"
+            elif dy <= -0.08 * sz:
+                g["script"] = "sub"
+    lines[:] = [ln for k, ln in enumerate(lines) if k not in moved]
+
+
+FOOTNOTE_MARK_RE = re.compile(r"^(?:\d{1,3}|[*†‡§¶]{1,3}|[a-z])$")
+
+
+def sup_runs(glyphs):
+    """Grupos de superíndices seguidos de un renglón: [(texto, [glifos])]."""
+    gs = sorted(glyphs, key=lambda g: g["x0"])
+    runs = []
+    i = 0
+    while i < len(gs):
+        if gs[i].get("script") == "sup" and gs[i]["u"].strip():
+            j = i + 1
+            while j < len(gs) and gs[j].get("script") == "sup" and gs[j]["u"].strip() and gs[j]["x0"] - gs[j - 1]["x1"] < 1.5:
+                j += 1
+            runs.append(("".join(g["u"] for g in gs[i:j]), gs[i:j]))
+            i = j
+        else:
+            i += 1
+    return runs
+
+
+def footnote_marker(vis):
+    """Número (o símbolo) con el que empieza una nota al pie: (texto, glifos)."""
+    lead = []
+    for g in vis:
+        if g.get("script") != "sup":
+            break
+        lead.append(g)
+    if not lead:
+        # Algunos programas (como LibreOffice) escriben el número de la nota
+        # en letra común, pegado al texto.
+        for g in vis:
+            if not g["u"].isdigit() or len(lead) == 3:
+                break
+            lead.append(g)
+        if lead and len(lead) < len(vis) and (vis[len(lead)]["u"] in ".,:;)%/-" or vis[len(lead)]["u"].isdigit()):
+            return None, None
+    tok = "".join(g["u"] for g in lead)
+    if lead and len(lead) < len(vis) and FOOTNOTE_MARK_RE.match(tok):
+        return tok, lead
+    return None, None
+
+
+def drop_page_numbers(pages_data):
+    # Número de página al pie (LibreOffice, Word...): un renglón suelto,
+    # abajo de todo, que solo tiene el número de la página (con un corrimiento
+    # fijo en todo el documento). No es parte del texto.
+    found = []
+    for pd in pages_data:
+        L = [ln for ln in pd["lines"] if line_body(ln["glyphs"])[0] is not None]
+        if not L:
+            continue
+        last = L[-1]
+        t = "".join(g["u"] for g in last["glyphs"]).strip()
+        m = re.match(r"^(?:[-–—]\s*)?(\d{1,4})(?:\s*[-–—])?$", t)
+        if m and last["y"] < pd["H"] * 0.15:
+            found.append((pd, last, int(m.group(1)) - pd["pnum"]))
+    if not found:
+        return
+    offsets = Counter(off for _, _, off in found)
+    off, n = offsets.most_common(1)[0]
+    if n < 2 and len(pages_data) > 1:
+        return
+    for pd, last, o in found:
+        if o == off:
+            pd["lines"] = [ln for ln in pd["lines"] if ln is not last]
+
+
+def extract_footnotes(pages_data, body_sz):
+    # Notas al pie: abajo de todo de la página, cada una empieza con un número
+    # (o símbolo) que también aparece como superíndice en el texto de esa
+    # página (la llamada), y arriba de la primera queda más espacio que entre
+    # sus renglones. Se sacan del pie de la página, la llamada se marca para
+    # escribirla como [^1] y se devuelven las notas para escribirlas al final
+    # del documento. Si algo no cierra, la página queda como está.
+    notes_out = []
+    used_ids = set()
+    for pd in pages_data:
+        L = [ln for ln in pd["lines"] if line_body(ln["glyphs"])[0] is not None]
+        if len(L) < 2:
+            continue
+        info = []
+        for ln in L:
+            vis = sorted((g for g in ln["glyphs"] if g["u"].strip()), key=lambda g: g["x0"])
+            sz, _ = line_body(ln["glyphs"])
+            info.append((vis, sz))
+        # Llamadas de la página: superíndices del texto.
+        start = None
+        k = len(L) - 1
+        while k >= 1:
+            vis, sz = info[k]
+            if sz > body_sz * 1.02 or L[k]["y"] > pd["H"] * 0.45:
+                break
+            tok, _ = footnote_marker(vis)
+            if tok and L[k]["y"] < pd["H"] * 0.4:
+                gap = L[k - 1]["y"] - L[k]["y"]
+                step = (L[k]["y"] - L[k + 1]["y"]) if k + 1 < len(L) else 1.2 * sz
+                if gap >= 1.3 * step and any(t == tok for ln in L[:k] for t, _ in sup_runs(ln["glyphs"])):
+                    start = k
+            k -= 1
+        if start is None:
+            continue
+        notes = []
+        body_tokens = {t for ln in L[:start] for t, _ in sup_runs(ln["glyphs"])}
+        for ln, (vis, sz) in zip(L[start:], info[start:]):
+            tok, lead = footnote_marker(vis)
+            if tok and tok in body_tokens and tok not in {n[0] for n in notes}:
+                rest = sorted((g for g in ln["glyphs"] if g not in lead), key=lambda g: g["x0"])
+                while rest and not rest[0]["u"].strip():
+                    rest.pop(0)
+                notes.append([tok, [dict(ln, glyphs=rest, x0=rest[0]["x0"])]])
+            elif notes:
+                notes[-1][1].append(ln)
+        # Cada nota se asigna a su llamada en orden: la nota 2 es el primer
+        # superíndice "2" que aparece después de la llamada de la nota 1 (así
+        # un "m²" que esté antes no se confunde con la llamada).
+        body_runs = [(t, run) for ln in L[:start] for t, run in sup_runs(ln["glyphs"])]
+        refs = {}
+        pos = -1
+        taken = set()
+        for tok, _ in notes:
+            idxs = [i for i, (t, _) in enumerate(body_runs) if t == tok and i not in taken]
+            after = [i for i in idxs if i > pos]
+            i = after[0] if after else idxs[-1]
+            taken.add(i)
+            pos = max(pos, i)
+            refs[tok] = body_runs[i][1]
+        for tok, n_lines in notes:
+            nid = tok if (tok.isalnum() and tok not in used_ids) else f"n{len(used_ids) + 1}"
+            while nid in used_ids:
+                nid = f"n{len(used_ids) + 1}-{pd['pnum']}"
+            used_ids.add(nid)
+            for g in refs[tok]:
+                g["fn_ref"] = nid
+            for ln in n_lines:
+                ln["pnum"] = pd["pnum"]
+                # Los renglones de una nota se unen en un solo párrafo.
+                ln["x0"] = n_lines[0]["x0"]
+            notes_out.append((nid, n_lines))
+        cut = next(i for i, ln in enumerate(pd["lines"]) if ln is L[start])
+        pd["lines"] = pd["lines"][:cut]
+        # El último renglón del texto ya no está abajo de todo de la página:
+        # se marca para que un párrafo que sigue en la página siguiente se
+        # siga reconociendo como el mismo.
+        L[start - 1]["before_footnotes"] = True
+    return notes_out
+
+
+def add_drawn_bullets(lines, marks):
+    # Si una figura chica está justo a la izquierda del primer carácter de un
+    # renglón y a la altura de las letras, es la viñeta de un ítem: se agrega
+    # un "•" en su lugar, para que la lista se reconozca como tal.
+    for mx0, my0, mx1, my1 in marks:
+        cy = (my0 + my1) / 2
+        best = None
+        for ln in lines:
+            if not ln["glyphs"]:
+                continue
+            first = min(ln["glyphs"], key=lambda g: g["x0"])
+            gap = first["x0"] - mx1
+            if 0.5 <= gap <= 25.0 and ln["y"] - 1.0 <= cy <= ln["y"] + first["sz"] * 0.9:
+                if first["u"] in ("•", "●", "○", "■", "▪", "◦", "–", "-"):
+                    best = None
+                    break
+                if best is None or abs(ln["y"] - cy) < abs(best[0]["y"] - cy):
+                    best = (ln, first)
+        if best is not None:
+            ln, first = best
+            ln["glyphs"].append({
+                "x0": mx0,
+                "x1": mx1,
+                "y": ln["y"],
+                "sz": first["sz"],
+                "fn": first["fn"],
+                "u": "•",
+                "glyph": "",
+                "color": "0",
+                "link_uri": None,
+                "is_emoji": False,
+            })
+
+
 def path_segments(el, tr, H):
     # Descompone un trazo de mutool en sus segmentos rectos (en coordenadas
     # PDF, con el eje y hacia arriba). Hace falta porque algunos programas
@@ -1069,10 +1502,11 @@ def find_grid_tables(h_segs, v_segs):
         if x1 - x0 < 20.0 or y_top - y_bot < 8.0:
             continue
         # Un recuadro de una sola celda es un marco alrededor de un texto,
-        # no una tabla: lo dejamos como texto común.
-        if len(xs) == 2 and len(ys) == 2:
-            continue
+        # no una tabla: el texto queda como texto común, pero se guarda el
+        # recuadro para que sus líneas no se tomen por otra cosa.
+        is_box = len(xs) == 2 and len(ys) == 2
         tables.append({
+            "box": is_box,
             "xs": xs,
             "ys": ys,
             "x0": x0,
@@ -1086,7 +1520,12 @@ def find_grid_tables(h_segs, v_segs):
 
 def parse_trace_pages(pdf_path, page_xobjects, page_links):
     xml_bytes = subprocess.check_output(["mutool", "draw", "-F", "trace", "--", pdf_path], stderr=subprocess.DEVNULL)
-    root = ET.fromstring(xml_bytes)
+    # mutool escribe el nombre del archivo en el XML sin escapar las comillas
+    # (con un nombre como 'nota "final".pdf' el XML queda roto). No se usa,
+    # así que se saca. Además se lee con un lector tolerante, que acepta
+    # documentos muy grandes y no se detiene por un detalle mal formado.
+    xml_bytes = re.sub(rb"<document[^>\n]*>", b"<document>", xml_bytes, count=1)
+    root = ET.fromstring(xml_bytes, parser=ET.XMLParser(recover=True, huge_tree=True))
     pages_data = []
     font_stats = defaultdict(lambda: {"total": 0, "unsupported": 0})
 
@@ -1099,6 +1538,7 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
         math_strokes = []
         grid_h = []
         grid_v = []
+        small_marks = []
         page_emojis = []
         page_images = []
         raw_glyphs = []
@@ -1109,6 +1549,10 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
 
         for el in p_el.iter():
             tag = el.tag
+            if tag in ("fill_path", "stroke_path"):
+                mark = small_mark_box(el, H)
+                if mark is not None:
+                    small_marks.append(mark)
             if tag == "fill_path":
                 col = el.get("color", "")
                 tr = [float(x) for x in el.get("transform", "1 0 0 1 0 0").split()]
@@ -1188,13 +1632,29 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
                         u = g.get("unicode", "")
                         font_stats[fn]["total"] += 1
                         if not u or u == "\ufffd" or any("\ue000" <= ch <= "\uf8ff" for ch in u):
-                            font_stats[fn]["unsupported"] += 1
-                            continue
+                            if SYMBOL_FONT_RE.search(fn):
+                                # Las letras de símbolos (OpenSymbol de LibreOffice,
+                                # Symbol y Wingdings de Word...) se usan para las
+                                # viñetas de las listas, y muchas veces no dicen qué
+                                # carácter son. Se leen como una viñeta común.
+                                u = "•"
+                            else:
+                                font_stats[fn]["unsupported"] += 1
+                                continue
+                        # Ligaduras (ﬁ, ﬂ...): algunos programas las escriben
+                        # como un solo carácter especial; se pasan a letras
+                        # comunes para que el texto se pueda buscar y corregir.
+                        u = LIGATURES.get(u, u)
                         xv = tr[0] * gx + tr[2] * gy + tr[4]
                         yv = H - (tr[1] * gx + tr[3] * gy + tr[5])
                         uri = None
+                        # Una letra es parte de un enlace si la mayor parte de
+                        # ella cae en el área del enlace. El área suele pasarse
+                        # un poco de la última letra: con una tolerancia fija, el
+                        # punto o la coma que siguen al enlace quedaban adentro.
                         for lx0, ly0, lx1, ly1, luri in links:
-                            if lx0 - 2 <= xv <= lx1 + 2 and ly0 - 2 <= yv <= ly1 + 2:
+                            overlap = min(xv + adv, lx1) - max(xv, lx0)
+                            if overlap >= 0.6 * max(adv, 0.1) and ly0 - 2 <= yv <= ly1 + 2:
                                 uri = luri
                                 break
                         raw_glyphs.append({
@@ -1273,6 +1733,8 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
             lines.append({"y": em["y"], "glyphs": [eg]})
 
         lines.sort(key=lambda ln: -ln["y"])
+        attach_scripts(lines)
+        add_drawn_bullets(lines, small_marks)
         for ln in lines:
             ln["glyphs"].sort(key=lambda g: g["x0"])
             cleaned_gs = []
@@ -1296,13 +1758,14 @@ def parse_trace_pages(pdf_path, page_xobjects, page_links):
             ln["x0"] = ln["glyphs"][0]["x0"]
             ln["x1"] = max(g["x1"] for g in ln["glyphs"])
 
-        grid_tables = find_grid_tables(grid_h, grid_v)
+        grid_all = find_grid_tables(grid_h, grid_v)
+        grid_tables = [gt for gt in grid_all if not gt["box"]]
 
         def in_grid(stroke):
             y, x0, x1 = stroke[0], stroke[1], stroke[2]
             return any(
                 gt["y_bot"] - 3.0 <= y <= gt["y_top"] + 3.0 and x0 >= gt["x0"] - 3.0 and x1 <= gt["x1"] + 3.0
-                for gt in grid_tables
+                for gt in grid_all
             )
 
         # Las líneas de una grilla ya están resueltas: no tienen que confundirse
@@ -1746,7 +2209,7 @@ def format_table(header_lines, body_lines, stroke_info, left_margin, line_step, 
     return "\n".join(out_lines)
 
 
-GRID_BULLETS = {"•", "●", "○", "■", "▪", "►", "▸", "◦", "-", "–"}
+GRID_BULLETS = {"•", "●", "○", "■", "▪", "▫", "►", "▸", "◦", "‣", "⁃", "➢", "❖", "-", "–"}
 
 
 def grid_cell_text(sub_lines, marks_wraps=False):
@@ -1767,7 +2230,14 @@ def grid_cell_text(sub_lines, marks_wraps=False):
         glue = marks_wraps and prev_glued_end and starts_lower and bool(parts)
         prev_glued_end = bool(gs) and gs[-1]["u"][-1:].isalpha()
         is_item = False
-        if len(gs) > 1 and gs[0]["u"] in GRID_BULLETS and not gs[0].get("is_emoji"):
+        # (Una celda que solo tiene un guion, como "-" para decir que no hay
+        # valor, no es una viñeta: el guion es el contenido.)
+        if (
+            len(gs) > 1
+            and gs[0]["u"] in GRID_BULLETS
+            and not gs[0].get("is_emoji")
+            and any(g["u"].strip() and g["u"] != "\u200b" for g in gs[1:])
+        ):
             nxt = gs[1]
             if gs[0]["u"] not in ("-", "–") or nxt["u"] in (" ", " ", "​") or nxt["x0"] - gs[0]["x1"] > 2.0:
                 is_item = True
@@ -1780,12 +2250,20 @@ def grid_cell_text(sub_lines, marks_wraps=False):
         if not txt:
             continue
         if glue and not is_item:
-            parts[-1] += txt
+            parts[-1][1] += txt
+        elif is_item or not parts:
+            parts.append([is_item, txt])
         else:
-            parts.append(f"• {txt}" if is_item else txt)
-    txt = merge_wrapped_emphasis(" ".join(parts))
-    txt = re.sub(r"\s+", " ", txt).strip()
-    return txt.replace("|", r"\|")
+            parts[-1][1] += " " + txt
+
+    def clean(t):
+        return re.sub(r"\s+", " ", merge_wrapped_emphasis(t)).strip().replace("|", r"\|")
+
+    # Una celda con varias viñetas se escribe con un renglón por ítem
+    # (format_grid_table la arma como lista). Si no, todo va en un renglón.
+    if len(parts) > 1 and any(it for it, _ in parts):
+        return "\n".join(("• " if it else "") + clean(t) for it, t in parts)
+    return clean(" ".join(("• " if it else "") + t for it, t in parts))
 
 
 def extract_grid_rows(gt, p_lines, consumed_lines):
@@ -1874,6 +2352,60 @@ def extract_grid_rows(gt, p_lines, consumed_lines):
     return rows
 
 
+def format_grid_table_with_lists(rows, widths):
+    # Las tablas "pipe" no admiten listas dentro de una celda: si una celda
+    # tiene varias viñetas, la tabla se escribe como "grid table" de Pandoc
+    # (con bordes dibujados con +, - y |), donde cada celda puede tener
+    # párrafos y listas. El ancho de cada columna conserva la proporción del
+    # PDF.
+    n_cols = len(widths)
+
+    def cell_blocks(cell):
+        # Cada renglón de la celda es un ítem ("• ...") o un párrafo. Antes
+        # de una lista y después de ella va un renglón vacío, como en el
+        # resto del documento.
+        out = []
+        prev_item = None
+        for part in cell.split("\n") if cell else []:
+            is_item = part.startswith("• ")
+            if out and prev_item is not None and is_item != prev_item:
+                out.append(("", False))
+            out.append((part[2:] if is_item else part, is_item))
+            prev_item = is_item
+        return out
+
+    # Cada párrafo o ítem va en un solo renglón: el estilo de md2pdf lee el
+    # Markdown con "hard_line_breaks", y un renglón cortado a mano dentro de
+    # la celda saldría cortado en el PDF. Los anchos se agrandan todos en la
+    # misma proporción hasta que entra el renglón más largo de cada columna.
+    # Dentro de la celda rigen las reglas de un párrafo común: un texto que
+    # empieza como una marca de Markdown se escapa (una celda con solo "-"
+    # sería una lista vacía).
+    def esc(text):
+        return "\\" + text if text in ("-", "*", "+") else escape_line_start(text)
+
+    def cell_lines(cell):
+        return [("- " + esc(text) if is_item else esc(text)) for text, is_item in cell_blocks(cell)]
+
+    longest = [max([1] + [len(l) for r in rows for l in cell_lines(r[c])]) for c in range(n_cols)]
+    scale = max(longest[c] / max(widths[c], 1.0) for c in range(n_cols))
+    col_w = [max(3, longest[c], math.ceil(scale * widths[c])) for c in range(n_cols)]
+
+    def border(ch):
+        return "+" + "+".join(ch * (w + 2) for w in col_w) + "+"
+
+    out = [border("-")]
+    for i, r in enumerate(rows):
+        cols = [cell_lines(r[c]) for c in range(n_cols)]
+        height = max(1, max(len(cl) for cl in cols))
+        for k in range(height):
+            out.append("|" + "|".join(
+                f" {(cols[c][k] if k < len(cols[c]) else '').ljust(col_w[c])} " for c in range(n_cols)
+            ) + "|")
+        out.append(border("=" if i == 0 else "-"))
+    return "\n".join(out)
+
+
 def format_grid_table(rows, xs):
     # Escribe la tabla como "pipe table" de Pandoc. Si entra en el ancho de
     # una línea (72 caracteres) se alinea con espacios; si no, la cantidad de
@@ -1883,6 +2415,8 @@ def format_grid_table(rows, xs):
     n_cols = len(xs) - 1
     widths = [xs[c + 1] - xs[c] for c in range(n_cols)]
     total_w = sum(widths) or 1.0
+    if any("\n" in cell for r in rows for cell in r):
+        return format_grid_table_with_lists(rows, widths)
     content_w = [max(3, max(len(r[c]) for r in rows)) for c in range(n_cols)]
     natural_len = sum(content_w) + 3 * n_cols + 1
 
@@ -1958,15 +2492,194 @@ def format_display_math(math_lines, math_strokes, prev_line_text=""):
         return f"$$\n{full}\n$$"
 
 
-def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=False):
+LATEX_SPECIALS = {
+    "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#",
+    "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+}
+
+
+def center_block(lines, left_margin, right_margin, body_sz):
+    # Si todos los renglones están centrados en el ancho del texto, devuelve
+    # el bloque de LaTeX que los centra; si no, None.
+    mid = (left_margin + right_margin) / 2
+    texts = []
+    sizes = []
+    bold = True
+    for ln in lines:
+        vis = [g for g in ln["glyphs"] if g["u"].strip() and g["u"] != "\u200b"]
+        if not vis:
+            continue
+        if vis[0]["x0"] < left_margin + 15.0 or abs((vis[0]["x0"] + vis[-1]["x1"]) / 2 - mid) > 8.0:
+            return None
+        gs = sorted(ln["glyphs"], key=lambda g: g["x0"])
+        txt = ""
+        for i, g in enumerate(gs):
+            if i > 0 and g["x0"] - gs[i - 1]["x1"] > 1.5 and not txt.endswith(" "):
+                txt += " "
+            txt += g["u"]
+        texts.append(re.sub(r"\s+", " ", txt.replace("\u200b", "")).strip())
+        sizes.extend(g["sz"] for g in vis)
+        bold = bold and sum(1 for g in vis if "Bold" in g["fn"]) >= 0.7 * len(vis)
+    if not texts:
+        return None
+    # Tamaño de LaTeX más parecido (con la letra del texto como referencia).
+    ratio = (sum(sizes) / len(sizes)) / (body_sz or 11.0)
+    size_cmd = min(
+        ((r"\normalsize", 1.0), (r"\large", 1.09), (r"\Large", 1.31), (r"\LARGE", 1.57), (r"\huge", 1.89), (r"\Huge", 2.27)),
+        key=lambda t: abs(t[1] - ratio),
+    )[0]
+    body = " ".join("".join(LATEX_SPECIALS.get(ch, ch) for ch in t) for t in texts)
+    style = size_cmd + (r"\bfseries" if bold else "")
+    return "\\begin{center}\n{" + style + " " + body + "\\par}\n\\end{center}"
+
+
+def escape_line_start(line):
+    # Un renglón de un párrafo que empieza como una marca de Markdown se
+    # leería como otra cosa: "2. Texto" o "- Texto" como un ítem de lista,
+    # "# Texto" como un título, "> Texto" como una cita y "---" como una
+    # línea horizontal (o un título subrayado). Se escapa con "\" para que
+    # siga siendo texto, como en el PDF.
+    m = re.match(r"^(\d{1,9})([.)])(\s)", line)
+    if m:
+        return m.group(1) + "\\" + line[len(m.group(1)):]
+    if re.match(r"^(?:[-*+>]\s|#{1,6}(?:\s|$)|[-=*_]{3,}\s*$)", line):
+        return "\\" + line
+    return line
+
+
+def heading_size_at(lines, yd, left_margin):
+    # Tamaño de letra del título que está donde apunta un destino del PDF
+    # (el mismo criterio que se usa después para ubicar el renglón).
+    for ln in lines:
+        if ln["y"] <= yd + 2.0 and yd - ln["y"] < 35.0 and abs(ln["x0"] - left_margin) < 8.0:
+            szs = [g["sz"] for g in ln["glyphs"] if g["u"].isalpha()]
+            return max(szs) if szs else None
+    return None
+
+
+def fix_list_nesting(blocks, left_margin):
+    # Corrige la sangría de los ítems según su posición real en el PDF, no
+    # según la distancia al margen (que sirve para los PDF de md2pdf, pero no
+    # para los de LibreOffice, Word o Google Docs, que corren las listas).
+    #
+    # Cada ítem se compara con los de arriba: si está más a la derecha que el
+    # anterior, es su hijo; si está a la misma altura o más a la izquierda,
+    # cierra los niveles más adentro. Pandoc solo anida un ítem si empieza al
+    # menos en la columna del texto de su padre ("- " -> 2, "1. " -> 3), y
+    # toma como código lo que tenga 4 espacios de más. Solo se cambia la
+    # sangría que no cumple eso, así lo que ya estaba bien no se toca.
+    stack = []  # por nivel abierto: (x del texto, sangría, columna del texto, es numerado, x de la marca)
+    for idx, b in enumerate(blocks):
+        if b["type"] == "p" or "x0" not in b:
+            stack = []
+            continue
+        m = re.match(r"^( *)(\S+ )", b["prefix"])
+        if not m:
+            continue
+        cur, marker = len(m.group(1)), m.group(2)
+        # Se compara dónde empieza el texto de cada ítem, que es lo que queda
+        # alineado entre hermanos (las marcas no: "9." y "10." empiezan en
+        # lugares distintos porque LaTeX alinea los números por la derecha).
+        x = b.get("text_x0", b["x0"])
+        # Pero en Google Docs pasa al revés: los números están alineados y el
+        # texto empieza donde termina la tabulación, que varía unos puntos
+        # según el ancho del número. Un ítem del mismo tipo con la marca en la
+        # misma posición que uno de arriba es su hermano: se usa la posición
+        # del texto de ese hermano.
+        es_num = marker[0].isdigit() or marker[0].isalpha()
+        for s_x, s_ind, s_col, s_num, s_mx in reversed(stack):
+            if s_num == es_num and abs(s_mx - b["x0"]) <= 1.5:
+                x = s_x
+                break
+        sibling = None
+        while stack and stack[-1][0] >= x - 3.0:
+            popped = stack.pop()
+            if abs(popped[0] - x) <= 3.0:
+                sibling = popped                   # ítem anterior del mismo nivel
+        if sibling is not None:
+            new = sibling[1]                       # los hermanos van con la misma sangría
+        elif stack:
+            p_x, p_ind, p_col, p_num, _ = stack[-1]
+            if p_col <= cur < p_col + 4:
+                new = cur                      # ya anida bien debajo del padre
+            elif p_num:
+                new = max(p_col, p_ind + 4)    # debajo de "1. ": 4 espacios
+            else:
+                new = p_col                    # debajo de "- ": 2 espacios
+        elif idx == 0 and cur < 4:
+            # Primer ítem del grupo con poca sangría: puede ser la
+            # continuación de una sublista que empezó antes (antes de una
+            # imagen o un bloque de código). Se deja como venía. Con 4 espacios
+            # o más no, porque después de una línea en blanco pandoc lo
+            # tomaría como un bloque de código.
+            new = cur
+        else:
+            new = 0                            # ítem del primer nivel
+        if new != cur:
+            b["prefix"] = " " * new + marker
+            b["cont_indent"] = " " * (new + len(marker))
+        stack.append((x, new, new + len(marker), es_num, b["x0"]))
+
+
+def text_end_x(glyphs):
+    """Dónde termina el texto de un renglón, sin contar los espacios del final."""
+    for g in reversed(glyphs):
+        if g["u"] not in (" ", " ", "​"):
+            return g["x1"]
+    return glyphs[-1]["x1"] if glyphs else 0.0
+
+
+def estimate_wrap_edge(pages_data, right_margin):
+    """Borde derecho del texto común (sin las tablas, que pueden salirse)."""
+    ends = []
+    for pd in pages_data:
+        for ln in pd["lines"]:
+            if not any(g["u"].strip() for g in ln["glyphs"]):
+                continue
+            if any(gt["y_bot"] - 3.0 <= ln["y"] <= gt["y_top"] + 3.0 for gt in pd.get("grid_tables", [])):
+                continue
+            ends.append(text_end_x(ln["glyphs"]))
+    ends.sort()
+    return max(right_margin, ends[int(len(ends) * 0.98)]) if ends else right_margin
+
+
+def first_word_width(glyphs):
+    """Ancho de la primera palabra de un renglón (hasta el primer espacio)."""
+    if not glyphs:
+        return 0.0
+    end = glyphs[0]["x1"]
+    for i, g in enumerate(glyphs):
+        if g["u"] in (" ", " ") or (i > 0 and g["x0"] - glyphs[i - 1]["x1"] > 1.5):
+            break
+        end = g["x1"]
+    return end - glyphs[0]["x0"]
+
+
+def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=False, wrap_edge=None, script_step=None):
+    # wrap_edge: borde derecho del texto en los documentos alineados a la
+    # izquierda (Google Docs, Word, navegadores...). Ahí un renglón corto no
+    # quiere decir que haya un salto de línea a propósito: el programa pasa
+    # una palabra al renglón siguiente cuando no entra, y si es larga queda
+    # mucho espacio libre. Solo es un salto a propósito si la primera palabra
+    # del renglón siguiente entraba en ese espacio. En los PDF de LaTeX
+    # (texto justificado) se usa la regla de siempre: los renglones de un
+    # párrafo llegan al margen y uno que termina bastante antes es un salto.
     if not lines:
         return ""
 
     blocks = []
+    # Tipo del último ítem del primer nivel ("ul1" u "ol"): la sangría de una
+    # sublista depende de él. Pandoc solo anida una sublista si empieza al
+    # menos en la columna del texto del ítem de arriba: debajo de "- " basta
+    # con 2 espacios, pero debajo de "1. " hacen falta 3 (se usan 4, la forma
+    # habitual). Con menos, la sublista sale como ítems del primer nivel.
+    top_type = None
 
     for idx, ln in enumerate(lines):
         gs = list(ln["glyphs"])
-        if not gs:
+        # Un renglón que solo tiene espacios no aporta nada (algunos programas
+        # los dejan sueltos entre los renglones de un párrafo).
+        if not any(g["u"].strip() and g["u"] != "\u200b" for g in gs):
             continue
         x0 = gs[0]["x0"]
         x1 = ln["x1"]
@@ -1975,53 +2688,114 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
 
         item_type = None
         prefix = ""
-        BULLET_CHARS = {"•", "●", "○", "■", "▪", "►", "▸"}
-        if gs[0]["u"] in BULLET_CHARS:
+        task_mark = ""
+        # (LibreOffice usa "◦" en el segundo nivel; Word, "‣", "⁃", "➢" o "❖".)
+        BULLET_CHARS = {"•", "●", "○", "◦", "■", "▪", "▫", "►", "▸", "‣", "⁃", "➢", "❖"}
+        TASK_CHARS = {"□": "[ ] ", "☐": "[ ] ", "⊠": "[x] ", "☒": "[x] ", "☑": "[x] "}
+        if (
+            gs[0]["u"] in TASK_CHARS
+            and len(gs) > 1
+            and (gs[1]["u"] in (" ", "\u00a0") or gs[1]["x0"] - gs[0]["x1"] > 2.0)
+        ):
+            # Tarea (- [ ] / - [x]): pandoc dibuja la casilla en el lugar de la
+            # viñeta (□ pendiente, ⊠ hecha). El nivel lo corrige después
+            # fix_list_nesting según la posición.
+            task_mark = TASK_CHARS[gs[0]["u"]]
+            item_type = "ul1" if x0 < left_margin + 20.0 else "ul2"
+            prefix = "- " if item_type == "ul1" else "  - "
+            gs = gs[1:]
+            while gs and gs[0]["u"] in (" ", "\u00a0", "\u200b"):
+                gs = gs[1:]
+        elif gs[0]["u"] in BULLET_CHARS:
             if gs[0]["u"] in ("•", "●", "►", "▸") and x0 < left_margin + 20.0:
                 item_type = "ul1"
                 prefix = "- "
-            elif gs[0]["u"] == "○" or (left_margin + 20.0 <= x0 < left_margin + 45.0):
+                top_type = "ul1"
+            elif gs[0]["u"] in ("○", "◦") or (left_margin + 20.0 <= x0 < left_margin + 45.0):
                 item_type = "ul2"
-                prefix = "  - "
+                prefix = "    - " if top_type == "ol" else "  - "
             else:
                 item_type = "ul3"
                 prefix = "    - "
             gs = gs[1:]
             while gs and gs[0]["u"] in (" ", "\u00a0", "\u200b"):
                 gs = gs[1:]
-        elif gs[0]["u"] == "–" and "Bold" in gs[0]["fn"] and x0 > left_margin + 20.0:
+        elif (
+            gs[0]["u"] in ("∗", "·")
+            and x0 > left_margin + 45.0
+            and len(gs) > 1
+            and (gs[1]["u"] in (" ", "\u00a0") or gs[1]["x0"] - gs[0]["x1"] > 2.0)
+        ):
+            # Viñetas del tercer (∗) y cuarto (·) nivel de las listas de LaTeX.
+            # Solo cuentan al principio de un renglón bien adentro del margen y
+            # separadas del texto, para no confundirlas con un "·" del texto.
+            item_type = "ul3"
+            prefix = "    - "
+            gs = gs[1:]
+            while gs and gs[0]["u"] in (" ", "\u00a0", "\u200b"):
+                gs = gs[1:]
+        elif gs[0]["u"] == "–" and x0 > left_margin + 20.0 and (
+            "Bold" in gs[0]["fn"]
+            or (len(gs) > 1 and (gs[1]["u"] in (" ", "\u00a0", "\t") or gs[1]["x0"] - gs[0]["x1"] > 2.0))
+        ):
+            # Viñeta "–": la de LaTeX (en negrita) y la del segundo nivel de
+            # Word y LibreOffice (seguida de un espacio). Solo con sangría, para
+            # no confundirla con una raya de diálogo al principio de un párrafo.
             item_type = "ul2"
-            prefix = "    - " if "Libertinus" in gs[0]["fn"] else "  - "
+            prefix = "    - " if ("Libertinus" in gs[0]["fn"] or top_type == "ol") else "  - "
             gs = gs[1:]
             while gs and gs[0]["u"] in (" ", "\u00a0", "\u200b"):
                 gs = gs[1:]
         else:
-            min_indent = left_margin + 8.0
-            if x0 >= min_indent and len(gs) >= 2:
+            # Un ítem numerado está corrido del margen, aunque sea un poco: en
+            # LaTeX los números se alinean por la derecha, y "10." empieza a
+            # menos de 8 puntos del margen. Un párrafo empieza justo en el margen.
+            min_indent = left_margin + 1.5
+            # Google Docs escribe un carácter invisible (\u200b) justo después
+            # del número de un ítem ("1.\u200b"). Con esa marca es un ítem
+            # aunque esté pegado al margen; sin ella, un renglón al margen que
+            # empieza con un número es un párrafo común.
+            gdocs_item = len(gs) >= 3 and any(g["u"] == "\u200b" for g in gs[1:4]) and gs[0]["u"].isdigit()
+            if (x0 >= min_indent or gdocs_item) and len(gs) >= 2:
                 k = 0
-                while k < len(gs) and (k == 0 or gs[k]["x0"] - gs[k - 1]["x1"] < 1.2):
+                # El número termina en el primer espacio: algunos programas
+                # (como los navegadores) escriben "1." seguido de un carácter
+                # de espacio real, pegado al número.
+                while k < len(gs) and gs[k]["u"] not in (" ", "\u00a0", "\u200b") and (
+                    k == 0 or gs[k]["x0"] - gs[k - 1]["x1"] < 1.2
+                ):
                     k += 1
                 tok = "".join(g["u"] for g in gs[:k])
-                if re.match(r"^(?:\d+\.|[a-e]\))$", tok) and k < len(gs) and (gs[k]["x0"] - gs[k - 1]["x1"] > 2.5):
+                if re.match(r"^(?:\d+\.|[a-e]\))$", tok) and k < len(gs) and (
+                    gs[k]["u"] in (" ", "\u00a0", "\u200b") or gs[k]["x0"] - gs[k - 1]["x1"] > 2.5
+                ):
                     item_type = "ol"
                     if x0 > left_margin + 35.0:
-                        prefix = f"  {tok} "
+                        prefix = f"    {tok} "
                     else:
                         prefix = f"{tok} "
+                        top_type = "ol"
                     gs = gs[k:]
                     while gs and gs[0]["u"] in (" ", "\u00a0", "\u200b"):
                         gs = gs[1:]
 
         is_quote_first = in_quote and idx == 0 and item_type is None
         txt = merge_wrapped_emphasis(format_inline_line(gs, in_heading=False, is_quote_first_line=is_quote_first))
+        if task_mark:
+            txt = task_mark + txt
 
         if item_type is not None:
             blocks.append({
                 "type": item_type,
                 "prefix": prefix,
                 "lines": [txt],
+                "x0": x0,
+                "text_x0": gs[0]["x0"] if gs else x0,
                 "last_x1": x1,
+                "last_end": text_end_x(ln["glyphs"]),
                 "last_y": yv,
+                "last_script": any(g.get("script") for g in ln["glyphs"]),
+                "last_before_fn": ln.get("before_footnotes", False),
                 "last_pnum": pnum,
             })
         else:
@@ -2031,7 +2805,10 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
                     "prefix": "",
                     "lines": [txt],
                     "last_x1": x1,
+                    "last_end": text_end_x(ln["glyphs"]),
                     "last_y": yv,
+                    "last_script": any(g.get("script") for g in ln["glyphs"]),
+                    "last_before_fn": ln.get("before_footnotes", False),
                     "last_pnum": pnum,
                 })
             else:
@@ -2039,11 +2816,27 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
                 same_page = (pnum == prev["last_pnum"])
                 dy = prev["last_y"] - yv
                 if same_page:
-                    is_cont = (dy <= line_step * 1.28)
+                    # Los navegadores separan un poco más un renglón que tiene un
+                    # superíndice o un subíndice: no por eso es otro párrafo.
+                    limit = line_step * 1.28
+                    if script_step and (prev.get("last_script") or any(g.get("script") for g in ln["glyphs"])):
+                        limit = max(limit, script_step)
+                    is_cont = (dy <= limit)
                 else:
                     is_cont = (prev["type"] != "p" and x0 > left_margin + 8.0) or (
-                        prev["type"] == "p" and prev["last_x1"] >= right_margin - 20.0 and prev["last_y"] < 110.0
+                        prev["type"] == "p" and prev["last_x1"] >= right_margin - 20.0
+                        and (prev["last_y"] < 110.0 or prev.get("last_before_fn"))
                     )
+                # La continuación de un ítem queda a la derecha de su viñeta
+                # o número. (No sirve compararla con el texto del primer
+                # renglón: en Google Docs ese texto empieza donde termina la
+                # tabulación después de la marca, que varía según el ancho del
+                # número y se estira al justificar, y los renglones de abajo
+                # van siempre a la misma sangría.) Un renglón que empieza a la
+                # altura de la marca o más a la izquierda (por ejemplo, al
+                # margen) es un párrafo nuevo, aunque esté pegado al ítem.
+                if is_cont and prev["type"] != "p" and x0 < prev.get("x0", x0) + 2.0:
+                    is_cont = False
 
                 if is_cont:
                     prev_line = prev["lines"][-1]
@@ -2071,28 +2864,78 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
                         and ("/" in last_word or "http" in last_word)
                     ):
                         prev["lines"][-1] = merge_wrapped_emphasis(prev_line + txt)
-                    elif same_page and prev["last_x1"] < right_margin - 45.0:
+                    elif same_page and (
+                        prev["last_x1"] < right_margin - 45.0
+                        if wrap_edge is None
+                        else prev["last_end"] + 0.28 * gs[0]["sz"] + first_word_width(gs) < wrap_edge - 1.0
+                    ):
                         prev["lines"].append(txt)
                     else:
                         prev["lines"][-1] = merge_wrapped_emphasis(prev_line + " " + txt)
                     prev["last_x1"] = x1
+                    prev["last_end"] = text_end_x(ln["glyphs"])
                     prev["last_y"] = yv
+                    prev["last_script"] = any(g.get("script") for g in ln["glyphs"])
+                    prev["last_before_fn"] = ln.get("before_footnotes", False)
                     prev["last_pnum"] = pnum
                 else:
+                    # Otro párrafo del mismo ítem: viene después de un espacio
+                    # (o en la página siguiente) y empieza bien a la derecha de
+                    # la viñeta o el número, a la altura del texto del ítem.
+                    # Se cuenta desde la primera letra visible (Google Docs
+                    # escribe espacios antes del texto centrado).
+                    owner = prev.get("owner", prev) if prev["type"] != "p" else None
+                    vis_x0 = next((g["x0"] for g in gs if g["u"].strip() and g["u"] != "​"), x0)
+                    if (
+                        owner is not None
+                        and vis_x0 >= owner["x0"] + 6.0
+                        and (not same_page or dy < 3.2 * line_step)
+                    ):
+                        blocks.append({
+                            "type": "ip",
+                            "owner": owner,
+                            "prefix": "",
+                            "x0": owner["x0"],
+                            "lines": [txt],
+                            "last_x1": x1,
+                            "last_end": text_end_x(ln["glyphs"]),
+                            "last_y": yv,
+                            "last_script": any(g.get("script") for g in ln["glyphs"]),
+                            "last_before_fn": ln.get("before_footnotes", False),
+                            "last_pnum": pnum,
+                        })
+                        continue
                     blocks.append({
                         "type": "p",
                         "prefix": "",
                         "lines": [txt],
                         "last_x1": x1,
+                        "last_end": text_end_x(ln["glyphs"]),
                         "last_y": yv,
+                        "last_script": any(g.get("script") for g in ln["glyphs"]),
+                        "last_before_fn": ln.get("before_footnotes", False),
                         "last_pnum": pnum,
                     })
+
+    fix_list_nesting(blocks, left_margin)
+
+    def item_indent(b):
+        if "cont_indent" in b:
+            return b["cont_indent"]
+        if b["type"] == "ol":
+            # Los renglones que siguen se alinean con el texto del ítem
+            # (en una sublista numerada, "    1. " -> 7 espacios).
+            return " " * len(b["prefix"])
+        if b["type"] == "ul1":
+            return "  "
+        return "    "
 
     if in_quote:
         q_chunks = []
         for b in blocks:
-            if b["type"] == "p":
-                p_str = "\n".join(f"> {l}" for l in b["lines"])
+            if b["type"] in ("p", "ip"):
+                ind = item_indent(b["owner"]) if b["type"] == "ip" else ""
+                p_str = "\n".join(f"> {ind}{escape_line_start(l)}" for l in b["lines"])
                 q_chunks.append(("p", p_str))
             else:
                 first_l = f"> {b['prefix']}{b['lines'][0]}"
@@ -2110,11 +2953,16 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
     out_chunks = []
     for b in blocks:
         if b["type"] == "p":
-            out_chunks.append(("p", "\n".join(b["lines"])))
+            out_chunks.append(("p", "\n".join(escape_line_start(l) for l in b["lines"])))
+        elif b["type"] == "ip":
+            # Párrafo de un ítem: va con la sangría del texto del ítem, separado
+            # por una línea en blanco.
+            indent = item_indent(b["owner"])
+            out_chunks.append(("p", "\n".join(indent + escape_line_start(l) for l in b["lines"])))
         else:
-            indent = "  " if b["type"] == "ul1" else ("    " if b["type"] in ("ul2", "ul3") else "   ")
+            indent = item_indent(b)
             first_l = f"{b['prefix']}{b['lines'][0]}"
-            rest_l = [f"{indent}{l}" for l in b["lines"][1:]]
+            rest_l = [f"{indent}{escape_line_start(l)}" for l in b["lines"][1:]]
             out_chunks.append(("list", "\n".join([first_l] + rest_l)))
 
     res_parts = []
@@ -2201,6 +3049,10 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
     has_toc = ("section*.1" in dests) and numbersections
 
     heading_dests_by_page = defaultdict(list)
+    sz_count = Counter(round(g["sz"], 1) for pd in pages_data for ln in pd["lines"] for g in ln["glyphs"] if g["u"].isalpha())
+    body_font_sz = sz_count.most_common(1)[0][0] if sz_count else 10.95
+    drop_page_numbers(pages_data)
+    footnote_notes = extract_footnotes(pages_data, body_font_sz)
     level_map = {
         "section*": 1,
         "section": 1,
@@ -2215,7 +3067,17 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
         prefix = k.split(".", 1)[0]
         if prefix in level_map:
             num_str = k.split(".", 1)[1] if not prefix.endswith("*") else ""
-            heading_dests_by_page[pnum].append((yd, level_map[prefix], num_str, k))
+            lvl = level_map[prefix]
+            if prefix.endswith("*"):
+                # LaTeX marca todos los títulos sin número igual ("section*"),
+                # sean #, ## o ###. El nivel sale del tamaño de la letra
+                # comparado con el del texto común: el nivel 1 es bastante más
+                # grande, el 2 un poco más y el 3 es del mismo tamaño (en negrita).
+                h_sz = heading_size_at(pages_data[pnum - 1]["lines"], yd, left_margin)
+                if h_sz:
+                    ratio = h_sz / body_font_sz
+                    lvl = 1 if ratio >= 1.25 else (2 if ratio >= 1.07 else 3)
+            heading_dests_by_page[pnum].append((yd, lvl, num_str, k))
 
     for pnum in heading_dests_by_page:
         heading_dests_by_page[pnum].sort(key=lambda t: -t[0])
@@ -2248,7 +3110,8 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
     has_enddot = False
 
     if not heading_dests_by_page:
-        BULLET_CHARS = {"•", "●", "○", "■", "▪", "►", "▸"}
+        # (LibreOffice usa "◦" en el segundo nivel; Word, "‣", "⁃", "➢" o "❖".)
+        BULLET_CHARS = {"•", "●", "○", "◦", "■", "▪", "▫", "►", "▸", "‣", "⁃", "➢", "❖"}
         all_body_sizes = [
             g["sz"] for pd in pages_data for ln in pd["lines"] for g in ln["glyphs"]
             if g["u"].isalnum() and not any(g["u"] in BULLET_CHARS for g in ln["glyphs"])
@@ -2259,11 +3122,50 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
         else:
             body_sz = 10.5
 
+        # La portada de md2pdf (título, subtítulo, autor, fecha) ya pasa a la
+        # cabecera YAML: su letra grande no es un título de sección.
+        portada_y = min(y for y, _ in title_lines) - 1.0 if ("Doc-Start" in dests and title_lines) else None
+
+        def visible(ln):
+            return [g for g in ln["glyphs"] if g["u"].strip() and g["u"] != "​"]
+
+        def avg_size(gs):
+            return sum(g["sz"] for g in gs) / len(gs)
+
+        # Interlineado habitual de cada tamaño de letra: sirve para ver si un
+        # renglón suelto tiene más espacio arriba y abajo que un renglón
+        # común de un párrafo (como pasa con los subtítulos).
+        step_by_size = defaultdict(Counter)
+        for pd in pages_data:
+            vl = [(ln, visible(ln)) for ln in pd["lines"]]
+            vl = [(ln, v) for ln, v in vl if v]
+            for (a, va), (b, vb) in zip(vl, vl[1:]):
+                sa, sb = round(avg_size(va), 1), round(avg_size(vb), 1)
+                dy = a["y"] - b["y"]
+                if sa == sb and 0.9 * sa <= dy <= 2.2 * sa:
+                    step_by_size[sa][round(dy, 1)] += 1
+
+        def usual_step(sz):
+            c = step_by_size.get(round(sz, 1))
+            return c.most_common(1)[0][0] if c else 1.6 * sz
+
+        # Títulos del índice del PDF (Google Docs lo arma con los estilos de
+        # título del documento). Sirven para confirmar un título que no se
+        # distingue lo suficiente por el tamaño de la letra.
+        def norm_title(s):
+            if isinstance(s, bytes):
+                s = s.decode("utf-16" if s[:2] in (b"\xfe\xff", b"\xff\xfe") else "latin1", "replace")
+            return re.sub(r"[\s​]+", "", str(s)).lower()
+
+        outline_titles = [t for t in (norm_title(o[1]) for o in outlines) if len(t) >= 8]
+
         for p_idx, pd in enumerate(pages_data, 1):
             p_lines = pd["lines"]
             for l_idx, ln in enumerate(p_lines):
                 gs = ln["glyphs"]
                 if not gs:
+                    continue
+                if p_idx == 1 and portada_y is not None and ln["y"] > portada_y:
                     continue
                 txt = "".join(g["u"] for g in gs).strip()
                 if not txt or len(txt) > 130:
@@ -2284,10 +3186,113 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                     lvl = 2
                 elif avg_sz >= body_sz * 1.10 and is_mostly_bold:
                     lvl = 3
-                elif is_mostly_bold and re.match(r"^(?:(?:\d+\.|[A-Z]\.|[IVXLCDM]+\.)\s+|Punto\s+[A-Z]\b|📋)", txt):
-                    lvl = 2 if re.match(r"^(?:\d+\.|Punto\s+[A-Z]\b)", txt) else 3
+                vis = visible(ln)
+                # Los títulos de estos documentos empiezan en el margen: un
+                # renglón corrido que empieza con un número es un ítem de una
+                # lista numerada, aunque esté todo en negrita.
+                at_margin = bool(vis) and abs(vis[0]["x0"] - left_margin) <= 3.0
+                if lvl is None and at_margin and vis:
+                    vis_sz = avg_size(vis)
+                    # Renglones de arriba y de abajo en la misma página.
+                    prv_idx = next((k for k in range(l_idx - 1, -1, -1) if visible(p_lines[k])), None)
+                    prv = p_lines[prv_idx] if prv_idx is not None else None
+                    nxt = next((o for o in p_lines[l_idx + 1:] if visible(o)), None)
+                    nxt_sz = avg_size(visible(nxt)) if nxt else None
+                    prv_sz = avg_size(visible(prv)) if prv else None
+                    gap_up = prv["y"] - ln["y"] if prv else None
+                    gap_dn = ln["y"] - nxt["y"] if nxt else None
+                    in_outline = any(t.startswith(norm_title(txt)) for t in outline_titles) if len(norm_title(txt)) >= 8 else False
+                    if is_mostly_bold and re.match(r"^(?:(?:\d+\.|[A-Z]\.|[IVXLCDM]+\.)\s+|Punto\s+[A-Z]\b|📋)", txt):
+                        lvl = 2 if re.match(r"^(?:\d+\.|Punto\s+[A-Z]\b)", txt) else 3
+                    elif in_outline and len(txt) <= 130 and not is_mostly_bold and vis_sz >= body_sz + 0.4:
+                        # Está en el índice del PDF: es un título aunque la
+                        # letra sea apenas más grande que la del texto y no
+                        # esté en negrita. (Un renglón en negrita del mismo
+                        # tamaño que el texto queda como negrita, como antes.)
+                        ratio = vis_sz / body_sz
+                        lvl = 1 if ratio >= 1.5 else (2 if ratio >= 1.22 else 3)
+                    elif (
+                        not is_mostly_bold
+                        and nxt_sz is not None
+                        and nxt_sz - vis_sz >= 0.9
+                        and (
+                            prv_sz is None
+                            or prv_sz - vis_sz >= 0.9
+                            or gap_up > 1.3 * usual_step(vis_sz)
+                            or (p_idx, prv_idx) in heading_line_ids
+                        )
+                        and len(txt) <= 100
+                        and re.match(r"^\d+\.\s+\S", txt)
+                        and not re.search(r"[.,;:]$", txt)
+                    ):
+                        # Subtítulo numerado en letra más chica que el texto que
+                        # sigue, sin negrita (por ejemplo, un "Título 4" de
+                        # Google Docs): "1. Competencias Cardinales".
+                        lvl = 4
+                    elif (
+                        not is_mostly_bold
+                        and nxt is not None
+                        and len(txt) <= 60
+                        and len(txt.split()) >= 2
+                        and txt[:1].isupper()
+                        and not re.search(r"[.,;:!?]$", txt)
+                        and (gap_up is None or gap_up > 1.3 * usual_step(vis_sz))
+                        and gap_dn > 1.3 * usual_step(vis_sz)
+                        and abs(nxt["y"] - ln["y"]) < 4.0 * usual_step(vis_sz)
+                    ):
+                        # Renglón corto suelto, con más espacio arriba y abajo
+                        # que un renglón común y sin punto final: es el título
+                        # de lo que sigue ("Escala de Frecuencia / Probabilidad").
+                        lvl = 4
                 if lvl is not None:
                     heading_line_ids[(p_idx, l_idx)] = (lvl, "", "", ln["y"], [])
+        # Los tamaños de arriba son los de Google Docs. Otros programas (como
+        # LibreOffice o Word) usan títulos más chicos: si en todo el documento
+        # no hay ninguno de nivel 1, se suben todos para que el más grande
+        # sea #.
+        if heading_line_ids:
+            shift = min(v[0] for v in heading_line_ids.values()) - 1
+            if shift > 0:
+                heading_line_ids = {k: (v[0] - shift,) + v[1:] for k, v in heading_line_ids.items()}
+        # Un título largo ocupa varios renglones: el siguiente es parte del
+        # mismo título si tiene la misma letra, está pegado y su primera
+        # palabra no entraba en el renglón de arriba (por eso pasó abajo).
+        h_edge = estimate_wrap_edge(pages_data, right_margin)
+
+        def h_style(ln):
+            vis = [g for g in ln["glyphs"] if g["u"].strip()]
+            if not vis:
+                return None
+            bold = sum(1 for g in vis if "Bold" in g["fn"] or "BX" in g["fn"]) >= len(vis) * 0.7
+            return (sum(g["sz"] for g in vis) / len(vis), bold)
+
+        for key in sorted(heading_line_ids):
+            if key not in heading_line_ids:
+                continue
+            p_idx, l_idx = key
+            p_lines = pages_data[p_idx - 1]["lines"]
+            st0 = h_style(p_lines[l_idx])
+            extras = []
+            cur = l_idx
+            while cur + 1 < len(p_lines) and st0:
+                a, b = p_lines[cur], p_lines[cur + 1]
+                st1 = h_style(b)
+                other = heading_line_ids.get((p_idx, cur + 1))
+                vis_b = sorted((g for g in b["glyphs"] if g["u"].strip()), key=lambda g: g["x0"])
+                if (
+                    not st1
+                    or abs(st1[0] - st0[0]) > 0.5
+                    or st1[1] != st0[1]
+                    or (other is not None and other[0] != heading_line_ids[key][0])
+                    or a["y"] - b["y"] > 2.0 * st0[0]
+                    or text_end_x(a["glyphs"]) + 0.28 * st0[0] + first_word_width(vis_b) <= h_edge - 1.0
+                ):
+                    break
+                extras.append(cur + 1)
+                heading_line_ids.pop((p_idx, cur + 1), None)
+                cur += 1
+            if extras:
+                heading_line_ids[key] = heading_line_ids[key][:4] + (extras,)
 
     for pnum, hlist in heading_dests_by_page.items():
         p_lines = pages_data[pnum - 1]["lines"]
@@ -2346,10 +3351,11 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
 
     md_blocks = []
     if "Doc-Start" in dests:
-        yaml_lines = [
-            "---",
-            f'title: "{title_str}"',
-        ]
+        yaml_lines = ["---"]
+        # Sin título no se escribe "title:" (un documento sin portada no lo
+        # tenía en el Markdown original).
+        if title_str:
+            yaml_lines.append(f'title: "{title_str}"')
         if subtitle_str:
             yaml_lines.append(f'subtitle: "{subtitle_str}"')
         if author_str:
@@ -2381,13 +3387,21 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
             yaml_lines.append("ancho-imagenes: 60%")
             yaml_lines.append(r"header-includes: \newcommand{\marcaPrueba}{\textbf{[header-includes de la nota activo]}}")
         yaml_lines.append("---")
-        md_blocks.append("\n".join(yaml_lines))
+        if len(yaml_lines) > 2:
+            md_blocks.append("\n".join(yaml_lines))
 
     sec_keys = [k for k in dests if re.match(r"^section\.\d+$", k) and k != "section.1"]
     all_h1_newpage = len(sec_keys) >= 3 and all(abs(dests[k][2] - top_margin_y) < 5.0 for k in sec_keys)
 
     start_pnum = 1
-    start_y_max = first_struct_y + 2.0 if first_struct_y > 0 else H + 10.0
+    # Lo que está arriba del primer título se descarta solo si es la portada
+    # (título, subtítulo, autor y fecha, que ya pasaron a la cabecera YAML).
+    # Si el documento no tiene portada, esos renglones son párrafos comunes
+    # y se conservan (antes se perdían).
+    if "Doc-Start" in dests and title_lines:
+        start_y_max = min(y for y, _ in title_lines) - 1.0
+    else:
+        start_y_max = H + 10.0
     if has_toc and "section.1" in dests:
         sec1_pnum, _, sec1_yd = dests["section.1"]
         start_pnum = sec1_pnum
@@ -2412,6 +3426,30 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
     open_table = None
     open_code_box = None
     pending_prose = []
+    is_tex_pdf = any("TeX" in str(info.get(k, "")) for k in ("Producer", "Creator"))
+    # Borde derecho del texto en los documentos que no son de LaTeX. En
+    # general es el margen simétrico al izquierdo, pero si el margen derecho
+    # es más angosto los renglones llegan más lejos: se toma el mayor de los
+    # dos (sin contar los pocos renglones que se salen, como un número de
+    # página corrido o una tabla ancha).
+    wrap_edge = None
+    script_step = None
+    if not is_tex_pdf:
+        wrap_edge = estimate_wrap_edge(pages_data, right_margin)
+        # Interlineado típico del documento. Los navegadores bajan un poco el
+        # renglón que tiene un superíndice (más o menos medio tamaño de
+        # letra): hasta ahí sigue siendo el mismo párrafo.
+        steps = Counter()
+        for pd in pages_data:
+            L = pd["lines"]
+            for i in range(len(L) - 1):
+                sz_a = line_body(L[i]["glyphs"])[0]
+                sz_b = line_body(L[i + 1]["glyphs"])[0]
+                dy = L[i]["y"] - L[i + 1]["y"]
+                if sz_a and sz_b and abs(sz_a - body_font_sz) < 0.5 and abs(sz_b - body_font_sz) < 0.5 and body_font_sz <= dy <= 2.0 * body_font_sz:
+                    steps[round(dy, 1)] += 1
+        if steps:
+            script_step = steps.most_common(1)[0][0] + 0.55 * body_font_sz
     # Última tabla con grilla escrita: si la página siguiente empieza con una
     # tabla de las mismas columnas, es la continuación y se une a esta.
     last_grid = None
@@ -2419,7 +3457,12 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
     def flush_prose():
         nonlocal pending_prose
         if pending_prose:
-            md_blocks.append(format_prose_lines(pending_prose, left_margin, right_margin, line_step, in_quote=False))
+            md_blocks.append(
+                format_prose_lines(
+                    pending_prose, left_margin, right_margin, line_step,
+                    in_quote=False, wrap_edge=wrap_edge, script_step=script_step,
+                )
+            )
             pending_prose = []
 
     def flush_code_box():
@@ -2438,10 +3481,40 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
         table_regions = []
         s_idx = 0
         has_open = open_table is not None
+        if not is_tex_pdf:
+            # Las tablas de LaTeX (booktabs: dos o tres líneas horizontales
+            # sin verticales) solo existen en los PDF hechos con TeX, como los
+            # de md2pdf. En los de Google Docs, Word, LibreOffice o un
+            # navegador, una línea horizontal suelta es un separador (---) si
+            # es larga, o un adorno (subrayado, borde) si es corta.
+            for y_s, x0_s, x1_s, _ in strokes:
+                if x1_s - x0_s >= 0.4 * text_linewidth:
+                    table_regions.append((y_s, None, None, False, False, x0_s, x1_s))
+            strokes = []
         while s_idx < len(strokes):
             if has_open:
-                y_top, x0, x1, _ = strokes[s_idx]
-                y_mid = strokes[s_idx + 1][0] if s_idx + 1 < len(strokes) else y_top - 25.0
+                y_top, x0, x1, lw0 = strokes[s_idx]
+                nxt_s = strokes[s_idx + 1] if s_idx + 1 < len(strokes) else None
+                # La tabla viene de la página anterior. Si esta página repite
+                # el encabezado, arriba hay una línea gruesa y, poco más abajo,
+                # una fina del mismo ancho (toprule y midrule). Si no lo
+                # repite, la primera línea gruesa es la de cierre (bottomrule)
+                # y todo lo que está arriba son filas de la tabla; lo que viene
+                # después de esa línea ya no es parte de la tabla (antes se
+                # tomaba como encabezado y ese texto se perdía).
+                repite_encabezado = (
+                    nxt_s is not None
+                    and nxt_s[3] < lw0 - 0.1
+                    and y_top - nxt_s[0] < 80.0
+                    and abs(nxt_s[1] - x0) <= 3.0
+                    and abs(nxt_s[2] - x1) <= 3.0
+                )
+                if not repite_encabezado:
+                    table_regions.append((1e6, 1e6, y_top, True, False, x0, x1))
+                    s_idx += 1
+                    has_open = False
+                    continue
+                y_mid = nxt_s[0]
                 s_idx += 2
                 if s_idx < len(strokes) and strokes[s_idx][3] > 0.7:
                     y_bot = strokes[s_idx][0]
@@ -2484,6 +3557,21 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                     consumed_lines.add(l_idx)
 
         events = []
+
+        # Línea horizontal de md2pdf (---): LaTeX la dibuja fina, de medio
+        # ancho de texto y centrada. Una barra de fracción se le parece, pero
+        # tiene texto pegado arriba y abajo; la línea horizontal está sola.
+        page_mid = (left_margin + right_margin) / 2
+        for ms in list(pd["math_strokes"]):
+            ms_y, ms_x0, ms_x1, _ = ms
+            if (
+                is_tex_pdf
+                and 0.45 * text_linewidth <= ms_x1 - ms_x0 <= 0.55 * text_linewidth
+                and abs((ms_x0 + ms_x1) / 2 - page_mid) < 6.0
+                and not any(abs(ln["y"] - ms_y) < 12.0 for ln in p_lines)
+            ):
+                events.append({"y": ms_y, "type": "hrule"})
+                pd["math_strokes"].remove(ms)
 
         for gt in pd["grid_tables"]:
             if pnum == start_pnum and gt["y_top"] > start_y_max:
@@ -2679,7 +3767,18 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                         rows = rows[1:]
                     # Una fila partida entre páginas sigue con la primera celda
                     # vacía: su texto se une al de la última fila anterior.
-                    if rows and not rows[0][0] and prev_rows[-1][0] and len(prev_rows) > 1:
+                    # También es una fila partida si en cada columna el texto
+                    # de arriba queda cortado (sin punto final) y sigue abajo
+                    # en minúscula: "¿Cómo justificar las" / "probabilidades...".
+                    def continues(a, b):
+                        a = a.rstrip("*_ ")
+                        b = b.lstrip("*_• ")
+                        return bool(a) and not re.search(r"[.!?:;]$", a) and b[:1].islower()
+
+                    split_row = bool(rows) and len(prev_rows) > 1 and any(rows[0]) and all(
+                        continues(a, b) for a, b in zip(prev_rows[-1], rows[0]) if b
+                    )
+                    if rows and len(prev_rows) > 1 and ((not rows[0][0] and prev_rows[-1][0]) or split_row):
                         prev_rows[-1] = [
                             (a + " " + b).strip() if b else a for a, b in zip(prev_rows[-1], rows[0])
                         ]
@@ -2745,6 +3844,21 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                 if pct != 80:
                     attrs.append(f"width={pct}%")
                 attr_str = "{" + " ".join(attrs) + "}" if attrs else ""
+                # Un renglón suelto justo antes de la imagen (como el título de
+                # un gráfico) tiene que quedar en la misma página que ella: si
+                # no, LaTeX puede dejarlo solo al pie y pasar la imagen a la
+                # hoja siguiente. Se agrega \needspace (definido en el estilo)
+                # con el alto que va a ocupar la imagen más el del título.
+                if md_blocks and not is_tex_pdf and not ev["caption"] and img_w > 0:
+                    head, sep, last = md_blocks[-1].rpartition("\n\n")
+                    if (
+                        last
+                        and "\n" not in last
+                        and len(last) <= 120
+                        and not re.match(r"^(?:#|\||!\[|\\|[-*+] |\d+[.)] |>|\s)", last)
+                    ):
+                        factor = (img["y_top"] - img["y_bot"]) / img_w * pct / 100 + 0.08
+                        md_blocks[-1] = head + sep + f"\\needspace{{{factor:.2f}\\linewidth}}\n\n" + last
                 md_blocks.append(f"![{ev['caption']}]({img['path']}){attr_str}")
 
             elif etype == "display_math":
@@ -2764,6 +3878,15 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                         if min_prev_y > 250.0:
                             md_blocks.append(r"\newpage")
 
+                # Los títulos centrados de la carátula (Google Docs, Word...)
+                # no son títulos de sección: el Markdown no tiene forma de
+                # centrar un título, así que se escriben como un bloque de
+                # LaTeX centrado, con la letra grande y en negrita como en el
+                # original.
+                cover = center_block(ev["lines"], left_margin, right_margin, body_font_sz)
+                if not is_tex_pdf and pnum == 1 and not ev["dest_key"] and cover:
+                    md_blocks.append(cover)
+                    continue
                 h_parts = [format_inline_line(ln["glyphs"], in_heading=True) for ln in ev["lines"]]
                 h_txt = " ".join(h_parts).strip()
                 if num_str:
@@ -2778,18 +3901,46 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
 
     flush_code_box()
     flush_prose()
+    # Las notas al pie van al final, como [^1]: texto. Cada una es un solo
+    # párrafo: los renglones se unen con espacios.
+    for note_id, note_lines in footnote_notes:
+        note_md = format_prose_lines(note_lines, left_margin, right_margin, line_step, wrap_edge=wrap_edge)
+        note_txt = " ".join(part.strip() for part in note_md.split("\n") if part.strip())
+        if note_txt:
+            md_blocks.append(f"[^{note_id}]: {note_txt}")
     return "\n\n".join(b for b in md_blocks if b) + "\n"
 
 
 if __name__ == "__main__":
     pdf_file = sys.argv[1]
     out_file = sys.argv[2]
+    name = os.path.basename(pdf_file)
     try:
+        # Un archivo vacío o que no es un PDF (por ejemplo, un texto con la
+        # extensión cambiada) se avisa antes de intentar leerlo.
+        with open(pdf_file, "rb") as f:
+            head = f.read(1024)
+        if b"%PDF" not in head:
+            raise UnsupportedFontError(f"El archivo '{name}' no es un PDF (está vacío o tiene otro contenido).")
         md_text = convert_pdf_to_md(pdf_file)
         with open(out_file, "w", encoding="utf-8") as out_f:
             out_f.write(md_text)
     except UnsupportedFontError as e:
         sys.stderr.write(f"⚠️ Aviso: {e}\n")
+        sys.exit(2)
+    except Exception as e:
+        # Errores conocidos con un mensaje claro, en vez del detalle técnico
+        # de Python. El código 2 le indica al script que el aviso ya se mostró.
+        kind = type(e).__name__
+        if kind in ("PDFPasswordIncorrect", "PDFEncryptionError") or "password" in str(e).lower():
+            msg = (f"El archivo '{name}' está protegido con contraseña. Abrilo con la contraseña, "
+                   f"guardalo o imprimilo como un PDF nuevo sin contraseña y convertí ese.")
+        elif kind in ("PDFSyntaxError", "PSEOF", "PSSyntaxError", "PDFNoValidXRef", "CalledProcessError",
+                      "XMLSyntaxError", "PDFTypeError", "PDFValueError"):
+            msg = f"El archivo '{name}' está dañado o no es un PDF válido ({kind})."
+        else:
+            msg = f"No se pudo convertir '{name}' por un error inesperado ({kind}: {e})."
+        sys.stderr.write(f"❌ {msg}\n")
         sys.exit(2)
 PYTHON
 
@@ -2802,9 +3953,15 @@ trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
 for archivo in "${archivos[@]}"; do
   salida="${archivo:r}.md"
   temporal="$(mktemp --suffix=.md)"
-  python3 -c "$CONVERTIR_PY" "$archivo" "$temporal"
+  # El programa va por la entrada estándar y no como argumento (-c): Linux
+  # no acepta un argumento de más de 128 KiB y el programa ya es más largo.
+  python3 - "$archivo" "$temporal" <<< "$CONVERTIR_PY"
   ret=$?
-  if (( ret == 0 )) && mv -f -- "$temporal" "$salida"; then
+  # Se copia con cat (y no con mv) para que el .md tenga los permisos de
+  # siempre (mktemp crea el temporal solo legible por vos) o, si ya existía,
+  # conserve los suyos.
+  if (( ret == 0 )) && cat -- "$temporal" > "$salida"; then
+    rm -f -- "$temporal"
     temporal=""
     echo "✔ Generado: $salida"
   elif (( ret == 2 )); then
@@ -2826,3 +3983,6 @@ if (( ${#fallidos[@]} > 0 )); then
   exit 1
 fi
 echo "✅ Conversión completa."
+# Algún archivo pedido se saltó (no existía o no era un PDF): código 1.
+(( saltados > 0 )) && exit 1
+exit 0

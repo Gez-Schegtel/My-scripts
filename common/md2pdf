@@ -78,11 +78,25 @@
 #       > [!NOTE]             ->  > **Nota**   (el tipo, traducido)
 #       > [!tip] Mi título    ->  > **Mi título**
 #   Dentro de bloques de código y de `código en línea` no se cambia nada.
-#   Los .md sin [[ ]], imágenes ni avisos pasan directo a pandoc, sin traducción.
+#   Listas pegadas al texto de arriba: pandoc no las reconoce sin una línea
+#   en blanco antes y salen como parte del párrafo. Se agrega esa línea
+#   antes del primer ítem (con la misma regla que mdnorm: viñeta o número de
+#   hasta 3 cifras, así un año como "1816." al principio de un renglón no
+#   se toma como lista). La cabecera YAML no se toca. Un ítem con sangría
+#   (una tabulación o 4 espacios) pegado al párrafo pasa al margen con su
+#   lista (con esa sangría y la línea en blanco sería un bloque de código),
+#   y los bloques de código con sangría no se tocan.
+#   Si no hay nada que traducir, pandoc lee el .md original, sin copia.
 #
 # CÓDIGO DE SALIDA:
-#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló o si
-#   falta alguna dependencia o la configuración de estilo.
+#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló, si
+#   alguno de los que pasaste no existe o no es un .md, o si falta alguna
+#   dependencia o la configuración de estilo.
+#
+# ARCHIVOS QUE NO ESTÁN EN UTF-8:
+#   Un .md en otra codificación (por ejemplo Latin-1, de un editor viejo de
+#   Windows) se convierte igual, pero sin traducir la sintaxis de Obsidian,
+#   y se avisa cómo pasarlo a UTF-8 con iconv.
 #
 # DEPENDENCIAS REQUERIDAS:
 #   - zsh (El script está escrito específicamente para Z shell)
@@ -90,6 +104,9 @@
 #     estilo (la lista completa está en el README del repositorio Pandoc config)
 #   - El repositorio Pandoc config instalado en la carpeta de datos de pandoc
 #     (para comprobarlo: pandoc --version | grep -i "user data")
+#   - cmp (paquete diffutils, viene instalado), para ver si la copia
+#     traducida cambió algo, e iconv (paquete libc-bin, viene instalado),
+#     para comprobar que el .md esté en UTF-8.
 #   - perl, para traducir la sintaxis que pandoc no entiende (viene instalado
 #     en Debian/Ubuntu).
 #     git es opcional: si está, se usa para encontrar la raíz del repositorio.
@@ -160,14 +177,20 @@ done
 
 # --- 1. Construimos la lista de archivos a convertir --------------------------
 archivos=()
+saltados=0
 
 if (( $# > 0 )); then
   # Si pasaste archivos por argumento: md2pdf a.md b.md
   for archivo in "$@"; do
-    if [[ ! -f "$archivo" ]]; then
+    if [[ -d "$archivo" ]]; then
+      echo "⚠️ Saltando '$archivo': es una carpeta, no un archivo."
+      (( saltados++ ))
+    elif [[ ! -f "$archivo" ]]; then
       echo "⚠️ Saltando '$archivo': no existe."
+      (( saltados++ ))
     elif [[ "${(L)archivo:e}" != (md|markdown) ]]; then
       echo "⚠️ Saltando '$archivo': no es un archivo Markdown (.md)."
+      (( saltados++ ))
     else
       archivos+=("$archivo")
     fi
@@ -179,8 +202,11 @@ else
 fi
 
 # --- 2. Si no hay archivos, salimos -------------------------------------------
+# Si pediste archivos y ninguno sirvió, es un error (código 1); si no pediste
+# ninguno y en la carpeta no hay .md, no hay nada que hacer (código 0).
 if (( ${#archivos[@]} == 0 )); then
   echo "No se encontraron archivos Markdown para convertir."
+  (( saltados > 0 )) && exit 1
   exit 0
 fi
 
@@ -356,9 +382,67 @@ my %TIPOS = (note => "Nota", info => "Información", tip => "Consejo", hint => "
 # ~~~, de al menos el mismo largo): un ~~~ dentro de un ``` no lo cierra.
 my $cerca = "";
 sub cierra { $_[0] =~ /^\s*(`+|~+)\s*$/ && substr($1, 0, 1) eq substr($_[1], 0, 1) && length($1) >= length($_[1]) }
+# Lista pegada al texto de arriba: pandoc NO la reconoce si no hay una línea
+# en blanco antes, y sale como parte del párrafo. Se agrega esa línea antes
+# del primer ítem (no entre los ítems de una lista que ya empezó). Es la
+# misma regla que usa mdnorm: viñeta (-, *, +) o número de hasta 3 cifras
+# (1. o 1)) seguido de un espacio, así un año como "1816." al principio de un
+# renglón no se toma como lista.
+# Hasta 3 espacios de sangría: una tabulación ya son 4 columnas (con una
+# línea en blanco antes, pandoc lo leería como un bloque de código).
+my $item_inicio = qr/^ {0,3}(?:[-*+]|\d{1,3}[.)])\s+\S/;
+my $item = qr/^\s*(?:[-*+]|\d{1,3}[.)])\s+\S/;
+my ($anterior, $en_lista, $nro, $en_yaml) = ("", 0, 0, 0);
+# $en_sangrado: dentro de un bloque de código con sangría (no se toca).
+# $quitar: columnas de sangría que se sacan a una lista con sangría que estaba
+# pegada a un párrafo (ver más abajo).
+my ($en_sangrado, $quitar) = (0, 0);
+sub ancho { my $n = 0; for (split //, $_[0]) { $n = $_ eq "\t" ? $n + 4 - $n % 4 : $n + 1; } $n }
+sub sangria { my ($e) = $_[0] =~ /^([ \t]*)/; ancho($e) }
+sub quitar_sangria {    # saca hasta $n columnas de sangría (las tabulaciones cuentan 4)
+  my ($l, $n) = @_;
+  my ($e, $resto) = $l =~ /^([ \t]*)(.*)$/s;
+  my $w = ancho($e);
+  return (" " x ($w > $n ? $w - $n : 0)) . $resto;
+}
 while (my $linea = <STDIN>) {
-  if ($cerca ne "") { print $linea; $cerca = "" if cierra($linea, $cerca); next; }
-  if ($linea =~ /^\s*(```+|~~~+)/) { $cerca = $1; print $linea; next; }
+  $nro++;
+  # Cabecera YAML: sus listas ("tags:" y abajo "- uno") no se tocan.
+  if ($nro == 1 && $linea =~ /^\x{FEFF}?---\s*$/) { $en_yaml = 1; print $linea; next; }
+  if ($en_yaml) { $en_yaml = 0 if $linea =~ /^(?:---|\.\.\.)\s*$/; print $linea; next; }
+  if ($cerca ne "") { print $linea; $cerca = "" if cierra($linea, $cerca); $anterior = $linea; next; }
+  if ($linea =~ /^\s*(```+|~~~+)/) { $cerca = $1; print $linea; $anterior = $linea; next; }
+  my $original = $linea;
+  if ($linea !~ /\S/) {
+    # Una línea en blanco sola no termina la lista (puede haber una entre
+    # ítem e ítem): la termina el texto sin sangría que viene después.
+  } elsif (sangria($linea) >= 4 && !$en_lista && ($en_sangrado || $anterior !~ /\S/)) {
+    # Bloque de código con sangría (después de una línea en blanco, fuera de
+    # una lista): es código aunque empiece con "- " o "1. ". No se toca.
+    $en_sangrado = 1;
+  } elsif (!$en_lista && $linea =~ $item && sangria($linea) >= 4 && $anterior =~ /\S/
+           && $anterior !~ /^\s*(?:[#>|]|```|~~~)/) {
+    # Ítem con sangría (4 espacios o una tabulación) pegado a un párrafo:
+    # pandoc lo toma como más texto del párrafo. Con una línea en blanco y esa
+    # sangría sería código, así que la lista se corre al margen (y con ella
+    # los renglones que siguen, para que los ítems de abajo sigan siendo
+    # hermanos o sublistas). Lo mismo que hace mdnorm.
+    print $linea =~ /\r$/ ? "\r\n" : "\n";
+    $quitar = sangria($linea);
+    $en_lista = 1; $en_sangrado = 0;
+  } elsif ($linea =~ $item_inicio) {
+    print $linea =~ /\r$/ ? "\r\n" : "\n" if !$en_lista && $anterior =~ /\S/;
+    $en_lista = 1; $en_sangrado = 0;
+  } elsif ($linea =~ /^\S/ && $anterior !~ /\S/) {
+    $en_lista = 0; $en_sangrado = 0;       # párrafo nuevo, fuera de la lista
+  } elsif ($linea =~ /^#{1,6}\s/) {
+    $en_lista = 0; $en_sangrado = 0;
+  } elsif (sangria($linea) < 4) {
+    $en_sangrado = 0;
+  }
+  $quitar = 0 if !$en_lista;
+  $linea = quitar_sangria($linea, $quitar) if $quitar && $linea =~ /\S/;
+  $anterior = $original;
   # Avisos de GitHub y callouts de Obsidian: "> [!NOTE] Título". Pandoc los
   # muestra como una cita con "[!NOTE]" a la vista: queda el título en negrita
   # (o el tipo, traducido, si no tiene título). El +/- de plegado se ignora.
@@ -400,13 +484,32 @@ for archivo in "${archivos[@]}"; do
   salida="${archivo:r}.pdf"
   entrada="$archivo"
   temporal=""
-  if grep -q -e '\[\[' -e '!\[' -e '\[!' -- "$archivo"; then
-    temporal="$(mktemp --suffix=.md)"
-    if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
-         IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR" < "$archivo" > "$temporal"; then
-      echo "❌ Error al traducir la sintaxis que pandoc no entiende: $archivo"
-      fallidos+=("$archivo"); rm -f "$temporal"; continue
+  # Un .md que no está en UTF-8 (por ejemplo, en Latin-1, de un editor viejo
+  # de Windows) no se traduce: perl lo leería mal. Pandoc lo convierte igual
+  # (lo lee como Latin-1), y se avisa cómo pasarlo a UTF-8.
+  if ! iconv -f UTF-8 -t UTF-8 -- "$archivo" >/dev/null 2>&1; then
+    echo "⚠️ '$archivo' no está en UTF-8: se convierte sin traducir la sintaxis de Obsidian."
+    echo "   Para pasarlo a UTF-8: iconv -f latin1 -t utf-8 -- \"$archivo\" > nuevo.md"
+    rutas=("${archivo:h}" "${carpetas_imagenes[@]}" ".")
+    if pandoc -d estilo --resource-path="${(j.:.)rutas}" --output="$salida" -- "$archivo" 2>/dev/null; then
+      echo "✔ Generado: $salida"
+    else
+      echo "❌ Error al convertir: $archivo"
+      fallidos+=("$archivo")
     fi
+    continue
+  fi
+  # Se traduce siempre en una copia temporal, pero pandoc la lee solo si
+  # cambió algo; si no, lee el .md original (como antes).
+  temporal="$(mktemp --suffix=.md)"
+  if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
+       IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR" < "$archivo" > "$temporal"; then
+    echo "❌ Error al traducir la sintaxis que pandoc no entiende: $archivo"
+    fallidos+=("$archivo"); rm -f "$temporal"; temporal=""; continue
+  fi
+  if cmp -s -- "$archivo" "$temporal"; then
+    rm -f -- "$temporal"; temporal=""
+  else
     entrada="$temporal"
   fi
   rutas=("${archivo:h}" "${carpetas_imagenes[@]}" ".")
@@ -424,3 +527,6 @@ if (( ${#fallidos[@]} > 0 )); then
   exit 1
 fi
 echo "✅ Conversión completa."
+# Algún archivo pedido se saltó (no existía o no era un .md): código 1.
+(( saltados > 0 )) && exit 1
+exit 0

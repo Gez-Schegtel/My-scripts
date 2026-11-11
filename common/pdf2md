@@ -16,6 +16,20 @@
 #   citas, enlaces, emojis de Noto Color Emoji e imágenes con sus atributos
 #   ({.derecha width=25%}, etc.). También funciona con PDF de texto comunes.
 #
+#   Índice: si el PDF tiene índice, la cabecera lleva "toc: true" y
+#   "toc-depth" (el nivel más hondo que aparece en el índice), y no se copia
+#   el índice como texto. También se reconoce el índice de un documento con
+#   títulos sin número ("# Título {-}"), que LaTeX marca igual que el título
+#   del índice: es un índice si ese primer título se llama "Índice",
+#   "Contenido" o "Contents". Si además algún título tiene número, el
+#   original usaba numbersections: la cabecera lleva "numbersections: true"
+#   (y "classoption: numbers=enddot" si los números terminan en punto) y cada
+#   título sin número, {-}. Con títulos en letra sin serifa y texto con
+#   serifa, agrega "documentclass: scrartcl". Un "####" sin número sale en el
+#   PDF como "0.0.0.1. * Título" (por cómo el estilo redefine esos títulos)
+#   y vuelve a ser "#### Título {-}". Un título de dos renglones queda en uno
+#   aunque el título siguiente esté muy cerca.
+#
 #   Superíndices, subíndices y notas al pie: los superíndices y subíndices
 #   del texto (250 m², H₂O, 1º) se escriben como ^2^ y ~2~, la forma de
 #   pandoc. Las notas al pie (al final de la página, cada una con el número
@@ -31,8 +45,11 @@
 #   se une al párrafo. Lo mismo con los títulos largos que ocupan varios
 #   renglones, que quedan en un solo título. (En un párrafo justificado de
 #   LibreOffice un salto a propósito no se distingue de un corte normal y se
-#   une.) Si los títulos del documento son más chicos que los de Google Docs
-#   (LibreOffice, Word), el más grande pasa a ser #.
+#   une.) Un renglón que empieza con el número que sigue al del renglón de
+#   arriba ("3.1." y "3.2.") es siempre un salto a propósito, aunque el de
+#   arriba llegue casi al margen. Si los títulos del documento son más
+#   chicos que los de Google Docs (LibreOffice, Word), el más grande pasa a
+#   ser #.
 #
 #   Títulos de los PDF que no son de LaTeX: además de los de letra más grande
 #   o en negrita, se reconocen los subtítulos numerados en letra más chica
@@ -2655,6 +2672,20 @@ def first_word_width(glyphs):
     return end - glyphs[0]["x0"]
 
 
+def next_number(a, b):
+    """¿El renglón b empieza con el número que sigue al del renglón a?
+
+    ("3.1. Texto" y "3.2. Texto"). Es un salto de línea a propósito aunque el
+    renglón de arriba llegue casi al margen: un párrafo cortado normalmente
+    no sigue justo con la numeración siguiente."""
+    ma = re.match(r"^(\d+(?:\.\d+)*)\.\s", a)
+    mb = re.match(r"^(\d+(?:\.\d+)*)\.\s", b)
+    if not ma or not mb:
+        return False
+    pa, pb = ma.group(1).split("."), mb.group(1).split(".")
+    return len(pa) == len(pb) >= 2 and pa[:-1] == pb[:-1] and int(pb[-1]) == int(pa[-1]) + 1
+
+
 def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=False, wrap_edge=None, script_step=None):
     # wrap_edge: borde derecho del texto en los documentos alineados a la
     # izquierda (Google Docs, Word, navegadores...). Ahí un renglón corto no
@@ -2865,9 +2896,12 @@ def format_prose_lines(lines, left_margin, right_margin, line_step, in_quote=Fal
                     ):
                         prev["lines"][-1] = merge_wrapped_emphasis(prev_line + txt)
                     elif same_page and (
-                        prev["last_x1"] < right_margin - 45.0
-                        if wrap_edge is None
-                        else prev["last_end"] + 0.28 * gs[0]["sz"] + first_word_width(gs) < wrap_edge - 1.0
+                        (
+                            prev["last_x1"] < right_margin - 45.0
+                            if wrap_edge is None
+                            else prev["last_end"] + 0.28 * gs[0]["sz"] + first_word_width(gs) < wrap_edge - 1.0
+                        )
+                        or next_number(prev_line, txt)
                     ):
                         prev["lines"].append(txt)
                     else:
@@ -3047,6 +3081,36 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
 
     numbersections = any(k.startswith("section.") for k in dests)
     has_toc = ("section*.1" in dests) and numbersections
+    # Primer título del contenido (lo que viene después del índice).
+    toc_first_key = "section.1"
+    # Índice con títulos sin número ("# Título {-}"): LaTeX marca todos esos
+    # títulos como "section*", igual que el título del índice, así que la
+    # regla de arriba no lo ve. Es un índice si el primer "section*" se llama
+    # "Índice" (o "Contenido", "Contents"...) y hay títulos después.
+    toc_unnumbered = False
+    yaml_numbersections = numbersections
+    heading_prefixes = ("section", "subsection", "subsubsection", "paragraph", "subparagraph")
+    if not has_toc and "section*.1" in dests:
+        t_pnum, _, t_yd = dests["section*.1"]
+        t_line = next(
+            (ln for ln in pages_data[t_pnum - 1]["lines"] if ln["glyphs"] and ln["y"] <= t_yd + 2.0 and t_yd - ln["y"] < 35.0),
+            None,
+        )
+        # (LaTeX no escribe los espacios como letras: se comparan sin espacios.)
+        t_txt = re.sub(r"\s+", "", "".join(g["u"] for g in t_line["glyphs"])).lower() if t_line else ""
+        later = sorted(
+            (k for k in dests if k != "section*.1" and k.split(".", 1)[0].rstrip("*") in heading_prefixes
+             and (dests[k][0], -dests[k][2]) > (t_pnum, -t_yd)),
+            key=lambda k: (dests[k][0], -dests[k][2]),
+        )
+        if later and re.fullmatch(r"(?:[íi]ndice(?:general)?|contenidos?|tabladecontenidos?|(?:tableof)?contents)", t_txt):
+            has_toc = True
+            toc_unnumbered = True
+            toc_first_key = later[0]
+            # Si algún título sí tiene número (por ejemplo, un "####" que LaTeX
+            # numera "0.0.0.1."), el original tenía numbersections y los demás
+            # títulos llevaban {-}.
+            yaml_numbersections = any(not k.split(".", 1)[0].endswith("*") for k in later)
 
     heading_dests_by_page = defaultdict(list)
     sz_count = Counter(round(g["sz"], 1) for pd in pages_data for ln in pd["lines"] for g in ln["glyphs"] if g["u"].isalpha())
@@ -3316,7 +3380,12 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                         p_lines[nxt - 1]["y"] - n_ln["y"] < h_sz * 1.6
                         and n_ln["glyphs"][0]["fn"] == h_fn
                         and abs(n_ln["glyphs"][0]["sz"] - h_sz) < 0.3
-                        and not any(abs(n_ln["y"] - o_yd) < 22.0 for o_yd, _, _, o_k in hlist if o_k != k)
+                        # (y no es el renglón de otro título: ese queda justo
+                        # debajo de su destino, a menos de 35 puntos)
+                        and not any(
+                            n_ln["y"] <= o_yd + 2.0 and o_yd - n_ln["y"] < 35.0
+                            for o_yd, _, _, o_k in hlist if o_k != k
+                        )
                     ):
                         used_lines_for_headings.add((pnum, nxt))
                         extra_idxs.append(nxt)
@@ -3327,6 +3396,22 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                 if num_str and raw_start.startswith(num_str + "."):
                     has_enddot = True
                 heading_line_ids[(pnum, best_idx)] = (lvl, num_str, k, yd, extra_idxs)
+
+    # Un "####" sin número (con numbersections) sale "0.0.0.1. * Título" (ver
+    # más abajo, donde se escriben los títulos). LaTeX le pone a todos esos
+    # títulos el mismo nombre de destino, así que solo uno queda marcado en el
+    # PDF; los demás se reconocen por el texto.
+    if yaml_numbersections and heading_dests_by_page:
+        for pnum, pd in enumerate(pages_data, 1):
+            for l_idx, ln in enumerate(pd["lines"]):
+                if (pnum, l_idx) in heading_line_ids or (pnum, l_idx) in used_lines_for_headings or not ln["glyphs"]:
+                    continue
+                raw = "".join(g["u"] for g in ln["glyphs"] if g["u"].strip())
+                m = re.match(r"^(\d+(?:\.\d+){3,4})\.\*", raw)
+                if m and abs(ln["glyphs"][0]["x0"] - left_margin) < 3.0 and "Bold" in ln["glyphs"][0]["fn"]:
+                    num = m.group(1)
+                    kind = "paragraph" if num.count(".") == 3 else "subparagraph"
+                    heading_line_ids[(pnum, l_idx)] = (4 if kind == "paragraph" else 5, num, f"{kind}.{num}", ln["y"] + 10.0, [])
 
     toc_bold_map = {}
     if has_toc and "section.1" in dests:
@@ -3349,6 +3434,41 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                             if b_word:
                                 toc_bold_map[m.group(1)] = b_word
 
+    # scrartcl (la clase de KOMA) escribe los títulos con la letra sin serifa
+    # (Inter en el estilo, o Latin Modern Sans si no se eligió ninguna) y el
+    # texto con la letra con serifa. La clase "article" usa la misma letra
+    # para los dos.
+    body_fn = Counter(g["fn"] for pd in pages_data for ln in pd["lines"] for g in ln["glyphs"] if g["u"].isalpha())
+    body_fn = body_fn.most_common(1)[0][0] if body_fn else ""
+    is_scrartcl = any("Inter" in fn for fn in all_fonts) or (
+        "Sans" not in body_fn
+        and any(
+            "Sans" in fn and "Bold" in fn
+            for (hp, li) in heading_line_ids
+            for fn in [pages_data[hp - 1]["lines"][li]["glyphs"][0]["fn"]]
+        )
+    )
+    # Profundidad del índice: el nivel más hondo de los títulos que aparecen
+    # escritos en las páginas del índice (solo para el índice de títulos sin
+    # número; para el otro se mantiene la regla de siempre).
+    toc_depth = None
+    if toc_unnumbered:
+        f_pnum, _, f_yd = dests[toc_first_key]
+        toc_txt = "".join(
+            g["u"]
+            for p in range(dests["section*.1"][0], f_pnum + 1)
+            for ln in pages_data[p - 1]["lines"]
+            if not (p == f_pnum and ln["y"] <= f_yd + 2.0)
+            for g in ln["glyphs"]
+        )
+        toc_txt = re.sub(r"\s+", "", toc_txt).lower()
+        for o_lvl, o_title, o_dname in outlines:
+            if not o_dname or o_dname.split(".", 1)[0].rstrip("*") not in heading_prefixes:
+                continue
+            t = re.sub(r"\s+", "", o_title if isinstance(o_title, str) else "").lower()[:20]
+            if len(t) >= 3 and t in toc_txt:
+                toc_depth = max(toc_depth or 0, o_lvl)
+
     md_blocks = []
     if "Doc-Start" in dests:
         yaml_lines = ["---"]
@@ -3364,9 +3484,8 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
             yaml_lines.append(f'date: "{date_str}"')
         if has_toc:
             yaml_lines.append("toc: true")
-            is_scrartcl = any("Inter" in fn for fn in all_fonts)
-            yaml_lines.append(f"toc-depth: {4 if is_scrartcl else 3}")
-        if numbersections:
+            yaml_lines.append(f"toc-depth: {toc_depth if toc_depth else (4 if is_scrartcl else 3)}")
+        if yaml_numbersections:
             yaml_lines.append("numbersections: true")
         margin_cm = round(left_margin * 2.54 / 72.0, 1)
         if abs(margin_cm - 2.2) >= 0.1:
@@ -3379,9 +3498,9 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
             yaml_lines.append("monofont: JetBrains Mono")
         if abs(linestretch - 1.1) >= 0.03:
             yaml_lines.append(f"linestretch: {linestretch:g}")
-        if any("Inter" in fn for fn in all_fonts):
+        if is_scrartcl:
             yaml_lines.append("documentclass: scrartcl")
-        if has_enddot and numbersections:
+        if has_enddot and yaml_numbersections:
             yaml_lines.append("classoption: numbers=enddot")
         if has_marca_prueba:
             yaml_lines.append("ancho-imagenes: 60%")
@@ -3402,8 +3521,8 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
         start_y_max = min(y for y, _ in title_lines) - 1.0
     else:
         start_y_max = H + 10.0
-    if has_toc and "section.1" in dests:
-        sec1_pnum, _, sec1_yd = dests["section.1"]
+    if has_toc and toc_first_key in dests:
+        sec1_pnum, _, sec1_yd = dests[toc_first_key]
         start_pnum = sec1_pnum
         p_imgs = pages_data[sec1_pnum - 1]["images"]
         if p_imgs and p_imgs[0]["y_bot"] > sec1_yd - 20.0:
@@ -3894,6 +4013,21 @@ def convert_pdf_to_md(pdf_path, emoji_map=None):
                 if num_str in toc_bold_map:
                     bw = toc_bold_map[num_str]
                     h_txt = re.sub(r"\b" + re.escape(bw) + r"\b", f"**{bw}**", h_txt, count=1)
+                # Con numbersections, un título sin número lleva {-}.
+                unnumbered = bool(ev["dest_key"]) and ev["dest_key"].split(".", 1)[0].endswith("*")
+                # Un "####" o "#####" sin número sale en el PDF con número y
+                # un "*" adelante ("0.0.0.1. * Título"): el estilo redefine
+                # esos títulos y el "*" de \paragraph* queda como texto. Era
+                # "#### Título {-}".
+                if (
+                    yaml_numbersections
+                    and ev["dest_key"].split(".", 1)[0] in ("paragraph", "subparagraph")
+                    and re.match(r"^\\?\*(?:\s|$)", h_txt)
+                ):
+                    h_txt = re.sub(r"^\\?\*\s*", "", h_txt)
+                    unnumbered = True
+                if yaml_numbersections and unnumbered and h_txt:
+                    h_txt += " {-}"
                 md_blocks.append("#" * lvl + " " + h_txt)
 
                 if r"`\needspace`" in h_txt and ev_idx == len(merged_events) - 1:

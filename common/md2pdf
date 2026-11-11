@@ -77,6 +77,9 @@
 #   Avisos de GitHub y callouts de Obsidian:
 #       > [!NOTE]             ->  > **Nota**   (el tipo, traducido)
 #       > [!tip] Mi título    ->  > **Mi título**
+#   Letras matemáticas Unicode (𝐴, 𝑓, 𝑥, 𝛼 en U+1D400..U+1D7FF):
+#       𝐴 + 𝑓(𝑥)              ->  A + f(x)     (normalización NFKC)
+#   Evita errores de caracteres faltantes en LaTeX al copiar fórmulas de IA.
 #   Dentro de bloques de código y de `código en línea` no se cambia nada.
 #   Listas pegadas al texto de arriba: pandoc no las reconoce sin una línea
 #   en blanco antes y salen como parte del párrafo. Se agrega esa línea
@@ -265,7 +268,7 @@ carpeta_de_busqueda() {
 read -r -d '' TRADUCIR <<'PERL'
 use strict; use warnings; use utf8;
 use File::Find; use File::Basename qw(basename); use File::Spec;
-use Encode qw(encode decode); use Unicode::Normalize qw(NFC NFD);
+use Encode qw(encode decode); use Unicode::Normalize qw(NFC NFD NFKC);
 # Las rutas se manejan como texto (decodificado) y se codifican en UTF-8 solo
 # al preguntarle algo al sistema de archivos, para que anden acentos y eñes.
 sub fs  { encode("UTF-8", $_[0]) }
@@ -452,6 +455,10 @@ while (my $linea = <STDIN>) {
     (my $vacia = $pre) =~ s/\s+$//;               # línea de cita vacía: el título va solo
     "$pre**$titulo**\n$vacia"
   }e;
+  # Normalización de letras matemáticas Unicode (𝐴 𝑓 𝛼 -> A f α) fuera de `código`
+  $linea =~ s{(`+)(.*?)\1|([\x{1D400}-\x{1D7FF}])}{
+    defined $1 ? "$1$2$1" : NFKC($3)
+  }ge;
   # `código` se deja igual; ![[...]] y [[...]] se traducen
   $linea =~ s{(`+)(.*?)\1|(!?)\[\[([^\[\]\n]+?)\]\]|!\[([^\[\]\n]*)\]\((<[^>\n]+>|[^)\s]+)(\s+"[^"\n]*")?\)}{
     defined $1 ? "$1$2$1"

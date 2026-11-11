@@ -149,6 +149,12 @@
 #        - Callouts (<aside> ... </aside>): pasan a ser una cita (>); si no,
 #          pandoc borra las etiquetas y queda un párrafo común.
 #
+#   8. Letras matemáticas Unicode (𝐴, 𝑓, 𝑥, 𝛼 en U+1D400..U+1D7FF): al copiar
+#      de chats de IA o Notion a veces se pegan caracteres matemáticos
+#      especiales en lugar de letras comunes, provocando que LaTeX falle por
+#      caracteres no encontrados en la tipografía. Se normalizan a sus letras
+#      estándar (NFKC) fuera de bloques y de código en línea.
+#
 #   No toca: los bloques de código (``` o ~~~, y los de 4 espacios o una
 #   tabulación después de una línea en blanco), el código en línea (`...`),
 #   las fórmulas $$...$$, los entornos de LaTeX (\begin...\end) ni los <br>
@@ -264,7 +270,7 @@ carpeta_de_busqueda() {
 read -r -d '' NORMALIZAR <<'PERL'
 use strict; use warnings; use utf8;
 use File::Find; use File::Basename qw(basename); use File::Spec;
-use Encode qw(encode decode); use Unicode::Normalize qw(NFC NFD);
+use Encode qw(encode decode); use Unicode::Normalize qw(NFC NFD NFKC);
 sub fs  { encode("UTF-8", $_[0]) }
 sub txt { decode("UTF-8", $_[0]) }
 my $carpeta = txt($ENV{CARPETA_MD});
@@ -375,6 +381,10 @@ sub revisar_estandar {
 
 sub imagenes_en_linea {
   my ($l) = @_;
+  # Normalizar letras matemáticas Unicode (𝐴 𝑓 𝛼 -> A f α) fuera de código en línea
+  $l =~ s{(`+)(.*?)\1|([\x{1D400}-\x{1D7FF}])}{
+    defined $1 ? "$1$2$1" : NFKC($3)
+  }ge;
   $l =~ s{(`+)(.*?)\1|!\[\[([^\[\]\n]+?)\]\]|!\[([^\[\]\n]*)\]\((<[^>\n]+>|[^)\s]+)(\s+"[^"\n]*")?\)}{
     defined $1 ? "$1$2$1" : defined $3 ? imagen_obsidian($&, $3) : revisar_estandar($&, $4, $5, $6)
   }ge;

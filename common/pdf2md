@@ -611,31 +611,78 @@ def inspect_pdf_structure(pdf_path, emoji_map, local_images):
                 w = int(resolve1(attrs.get("Width", 0)))
                 h = int(resolve1(attrs.get("Height", 0)))
                 raw_bytes = stream.get_data()
-                md5_rgb = hashlib.md5(raw_bytes).hexdigest()
-                if w == 136 and h == 128 and md5_rgb in emoji_map:
-                    xobj_list.append(("emoji", emoji_map[md5_rgb]))
-                else:
-                    if md5_rgb in saved_hashes:
-                        img_rel = saved_hashes[md5_rgb]
-                    else:
-                        extracted_counter += 1
-                        out_fname = f"{pdf_stem}_img_{extracted_counter}.png"
-                        out_fpath = os.path.join(pdf_dir, out_fname)
+                if w == 136 and h == 128:
+                    md5_raw = hashlib.md5(raw_bytes).hexdigest()
+                    if md5_raw in emoji_map:
+                        xobj_list.append(("emoji", emoji_map[md5_raw]))
+                        continue
+
+                im_rgb = None
+                try:
+                    im_rgb = Image.open(io.BytesIO(raw_bytes))
+                except Exception:
+                    pass
+
+                if im_rgb is None and w > 0 and h > 0:
+                    cs = resolve1(attrs.get("ColorSpace"))
+                    mode = "RGB"
+                    if cs and getattr(cs, "name", "") == "DeviceGray":
+                        mode = "L"
+                    elif cs and getattr(cs, "name", "") == "DeviceCMYK":
+                        mode = "CMYK"
+                    try:
+                        im_rgb = Image.frombytes(mode, (w, h), raw_bytes)
+                    except Exception:
                         try:
                             im_rgb = Image.frombytes("RGB", (w, h), raw_bytes)
-                            if "SMask" in attrs:
-                                smask = resolve1(attrs["SMask"])
-                                im_a = Image.frombytes("L", (w, h), smask.get_data())
-                                im_rgba = im_rgb.copy()
+                        except Exception:
+                            pass
+
+                if im_rgb is None:
+                    continue
+
+                if im_rgb.mode not in ("RGB", "RGBA"):
+                    im_rgb = im_rgb.convert("RGB")
+
+                md5_rgb = hashlib.md5(im_rgb.convert("RGB").tobytes()).hexdigest()
+
+                if md5_rgb in saved_hashes:
+                    img_rel = saved_hashes[md5_rgb]
+                    xobj_list.append(("image", img_rel))
+                else:
+                    extracted_counter += 1
+                    out_fname = f"{pdf_stem}_img_{extracted_counter}.png"
+                    out_fpath = os.path.join(pdf_dir, out_fname)
+                    try:
+                        if "SMask" in attrs:
+                            smask = resolve1(attrs["SMask"])
+                            smask_raw = smask.get_data()
+                            im_a = None
+                            try:
+                                im_a = Image.open(io.BytesIO(smask_raw))
+                            except Exception:
+                                pass
+                            if im_a is None and w > 0 and h > 0:
+                                try:
+                                    im_a = Image.frombytes("L", (w, h), smask_raw)
+                                except Exception:
+                                    pass
+                            if im_a is not None:
+                                if im_a.mode != "L":
+                                    im_a = im_a.convert("L")
+                                im_rgba = im_rgb.convert("RGBA")
                                 im_rgba.putalpha(im_a)
                                 im_rgba.save(out_fpath)
                             else:
                                 im_rgb.save(out_fpath)
-                        except Exception:
-                            pass
+                        else:
+                            im_rgb.save(out_fpath)
+                    except Exception:
+                        pass
+                    if os.path.exists(out_fpath):
                         img_rel = "./" + out_fname
                         saved_hashes[md5_rgb] = img_rel
-                    xobj_list.append(("image", img_rel))
+                        xobj_list.append(("image", img_rel))
             page_xobjects[p_idx] = xobj_list
 
     return info, dests, outlines, page_xobjects, page_links

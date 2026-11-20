@@ -4,20 +4,24 @@
 # ==============================================================================
 # SCRIPT: md2pdf
 # DESCRIPCIÓN:
-#   Convierte archivos Markdown (.md) a PDF con pandoc, usando mi configuración
-#   de estilo ("pandoc -d estilo"). Es lo mismo que escribir a mano
+#   Convierte archivos Markdown (.md) a PDF (y opcionalmente a EPUB) con pandoc,
+#   usando mi configuración de estilo ("pandoc -d estilo" para PDF y
+#   "pandoc -d epub" para EPUB). Es lo mismo que escribir a mano
 #       pandoc -d estilo nota.md -o nota.pdf
-#   pero para varios archivos a la vez y con confirmación.
+#   pero para varios archivos a la vez, con confirmación, traducción al vuelo de
+#   la sintaxis de Obsidian/Notion y verificación automática de calidad del PDF.
 #
-#   El script NO define ningún aspecto del PDF (motor, fuentes, emojis, cuadros,
-#   márgenes...). Todo eso vive en el repositorio "Pandoc config", que es la
-#   carpeta de datos de pandoc (~/.local/share/pandoc):
-#       defaults/estilo.yaml     opciones de pandoc (el que se nombra con -d)
+#   El script NO define ningún aspecto del PDF o EPUB (motor, fuentes, emojis,
+#   cuadros, márgenes...). Todo eso vive en el repositorio "Pandoc config", que
+#   es la carpeta de datos de pandoc (~/.local/share/pandoc):
+#       defaults/estilo.yaml     opciones de pandoc para PDF (-d estilo)
+#       defaults/epub.yaml       opciones de pandoc para EPUB3 (-d epub)
 #       defaults/metadatos.yaml  idioma, márgenes, tamaño de letra
 #       defaults/estilo.tex      aspecto en LaTeX
+#       defaults/estilo-epub.css aspecto en lectores EPUB
 #       filters/                 filtros de pandoc que usa el estilo
-#   Para cambiar cómo se ven los PDF se edita ese repositorio, no este script.
-#   Cada nota solo necesita su cabecera (title, author, date...) y puede
+#   Para cambiar cómo se ven los PDF o EPUB se edita ese repositorio, no este
+#   script. Cada nota solo necesita su cabecera (title, author, date...) y puede
 #   cambiar un valor poniéndolo ahí (por ejemplo, geometry: margin=4cm).
 #
 #   Cómo funciona:
@@ -25,11 +29,20 @@
 #        pasa ninguno, todos los .md de la carpeta actual.
 #     2. Los muestra y pide confirmación (y o ENTER aceptan; cualquier otra
 #        respuesta cancela). Con -y no pregunta.
-#     3. Ejecuta pandoc una vez por archivo. El PDF se guarda al lado del .md
-#        con el mismo nombre (nota.md -> nota.pdf). Las imágenes se buscan
-#        primero en la carpeta del .md, así funciona aunque lo ejecutes desde
-#        otra carpeta, y después en las carpetas que pases con -i.
-#     4. Si un archivo falla, sigue con los demás y al final informa cuáles
+#     3. Ejecuta pandoc una vez por archivo. El PDF (y/o el EPUB si se pasó
+#        --epub o --all) se guarda al lado del .md con el mismo nombre
+#        (nota.md -> nota.pdf / nota.epub). Las imágenes se buscan primero en la
+#        carpeta del .md, así funciona aunque lo ejecutes desde otra carpeta, y
+#        después en las carpetas que pases con -i.
+#     4. Al generar un PDF, revisa el log de LuaLaTeX (cajas o tablas más altas
+#        que la hoja, renglones que sobresalen más de 12 pt, figuras demasiado
+#        grandes, caracteres sin fuente o imágenes faltantes) y, si está
+#        instalado poppler-utils (pdftotext y pdfimages), comprueba también la
+#        geometría real del PDF (páginas en blanco o solo con número de página,
+#        texto cortado contra el borde inferior y desbordes laterales). Con
+#        --strict-pdf devuelve error si detecta algún problema de maquetación;
+#        con --no-pdf-check se saltea esta revisión.
+#     5. Si un archivo falla, sigue con los demás y al final informa cuáles
 #        no se pudieron convertir.
 #
 # USO:
@@ -39,6 +52,10 @@
 #   md2pdf ~/notas/*.md       (Los archivos pueden estar en cualquier carpeta)
 #   md2pdf -y archivo.md      (-y o --yes: convierte sin pedir confirmación;
 #                              va con cualquiera de las formas de arriba)
+#   md2pdf --epub archivo.md  (Genera archivo.epub con "pandoc -d epub")
+#   md2pdf --all archivo.md   (Genera archivo.pdf y archivo.epub a la vez)
+#   md2pdf --strict-pdf a.md  (Falla si se detectan avisos de calidad PDF)
+#   md2pdf --no-pdf-check ... (Omite la verificación automática del PDF)
 #   md2pdf -i ~/imagenes archivo.md
 #                             (-i o --imagenes: otra carpeta donde buscar las
 #                              imágenes, también en sus subcarpetas. Se puede
@@ -92,9 +109,10 @@
 #   Si no hay nada que traducir, pandoc lee el .md original, sin copia.
 #
 # CÓDIGO DE SALIDA:
-#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló, si
-#   alguno de los que pasaste no existe o no es un .md, o si falta alguna
-#   dependencia o la configuración de estilo.
+#   0 si todo se convirtió (o si cancelaste), 1 si algún archivo falló (o si
+#   se pasó --strict-pdf y algún PDF tuvo avisos de maquetación), si alguno de
+#   los que pasaste no existe o no es un .md, o si falta alguna dependencia o
+#   la configuración de estilo.
 #
 # ARCHIVOS QUE NO ESTÁN EN UTF-8:
 #   Un .md en otra codificación (por ejemplo Latin-1, de un editor viejo de
@@ -110,16 +128,49 @@
 #   - cmp (paquete diffutils, viene instalado), para ver si la copia
 #     traducida cambió algo, e iconv (paquete libc-bin, viene instalado),
 #     para comprobar que el .md esté en UTF-8.
-#   - perl, para traducir la sintaxis que pandoc no entiende (viene instalado
-#     en Debian/Ubuntu).
+#   - perl, para traducir la sintaxis que pandoc no entiende y verificar el PDF
+#     (viene instalado en Debian/Ubuntu).
+#   - poppler-utils (opcional, trae pdftotext y pdfimages): si está instalado,
+#     se usa para revisar además páginas en blanco e invasión de márgenes en el
+#     PDF generado.
 #     git es opcional: si está, se usa para encontrar la raíz del repositorio.
 #
 # Instalación de dependencias en Debian/Ubuntu:
-#   sudo apt install zsh pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji
+#   sudo apt install zsh pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji fonts-dejavu-core fonts-dejavu-mono poppler-utils
 # ==============================================================================
 
 # extended_glob: permite el patrón *.(#i)(md|markdown)(N.) de más abajo.
 setopt extended_glob
+export max_print_line=10000
+
+# --- Opciones -----------------------------------------------------------------
+# -y / --yes: no pregunta, convierte directo.
+# --pdf / --epub / --all: formatos de salida (por defecto solo PDF).
+# --strict-pdf / --no-pdf-check: control automático de calidad de maquetación PDF.
+# -i carpeta / --imagenes carpeta: otra carpeta donde buscar las imágenes. Se
+#   puede repetir (-i una -i otra).
+# zparseopts saca las opciones de los argumentos (-E: en cualquier posición);
+# -F falla con una opción que no existe. Un "--" suelto se descarta (se acepta
+# por costumbre de otros comandos).
+uso="Uso: md2pdf [-y] [--pdf] [--epub] [--all] [--strict-pdf] [--no-pdf-check] [-i carpeta_de_imágenes] [archivo.md ...]"
+zparseopts -D -E -F -- y=opcion_y -yes=opcion_y \
+    -pdf=opcion_pdf -epub=opcion_epub -all=opcion_all \
+    -strict-pdf=opcion_strict -no-pdf-check=opcion_nocheck \
+    i+:=opcion_i -imagenes+:=opcion_i 2>/dev/null || {
+  echo "❌ Opción no válida o incompleta. $uso"
+  exit 1
+}
+[[ $1 == -- ]] && shift
+
+gen_pdf=0
+gen_epub=0
+(( $#opcion_pdf || $#opcion_all )) && gen_pdf=1
+(( $#opcion_epub || $#opcion_all )) && gen_epub=1
+if (( ! gen_pdf && ! gen_epub )); then
+  gen_pdf=1
+fi
+pdf_check=$(( $#opcion_nocheck ? 0 : 1 ))
+strict_pdf=$(( $#opcion_strict ? 1 : 0 ))
 
 # --- Comprobaciones previas ---------------------------------------------------
 # Se hacen antes de pedir nada, para fallar una sola vez y con un mensaje claro
@@ -131,40 +182,35 @@ if (( ! $+commands[pandoc] )); then
   exit 1
 fi
 
-if (( ! $+commands[lualatex] )); then
-  echo "❌ Error: lualatex no está instalado (lo usa el estilo de los PDF). Instalalo con:"
-  echo "   sudo apt install texlive-luatex"
-  exit 1
+if (( gen_pdf )); then
+  if (( ! $+commands[lualatex] )); then
+    echo "❌ Error: lualatex no está instalado (lo usa el estilo de los PDF). Instalalo con:"
+    echo "   sudo apt install texlive-luatex"
+    exit 1
+  fi
+
+  # Se comprueba que "-d estilo" se pueda cargar: convierte un texto vacío a texto
+  # plano (no genera ningún PDF). Falla si pandoc no encuentra defaults/estilo.yaml
+  # en su carpeta de datos o si ese archivo apunta a otro que no existe.
+  if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
+    echo "❌ Error: pandoc no pudo cargar la configuración de estilo (-d estilo)."
+    echo "   Tiene que existir defaults/estilo.yaml dentro de la carpeta de datos de"
+    echo "   pandoc. Para ver cuál es esa carpeta:"
+    echo "     pandoc --version | grep -i \"user data\""
+    echo "   Tiene que ser ~/.local/share/pandoc. Si muestra ~/.pandoc, es porque"
+    echo "   ~/.local/share/pandoc no existe (pandoc usa la carpeta vieja solo en"
+    echo "   ese caso)."
+    exit 1
+  fi
 fi
 
-# Se comprueba que "-d estilo" se pueda cargar: convierte un texto vacío a texto
-# plano (no genera ningún PDF). Falla si pandoc no encuentra defaults/estilo.yaml
-# en su carpeta de datos o si ese archivo apunta a otro que no existe.
-if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
-  echo "❌ Error: pandoc no pudo cargar la configuración de estilo (-d estilo)."
-  echo "   Tiene que existir defaults/estilo.yaml dentro de la carpeta de datos de"
-  echo "   pandoc. Para ver cuál es esa carpeta:"
-  echo "     pandoc --version | grep -i \"user data\""
-  echo "   Tiene que ser ~/.local/share/pandoc. Si muestra ~/.pandoc, es porque"
-  echo "   ~/.local/share/pandoc no existe (pandoc usa la carpeta vieja solo en"
-  echo "   ese caso)."
-  exit 1
+if (( gen_epub )); then
+  if ! echo "" | pandoc -d epub -t plain -o /dev/null 2>/dev/null; then
+    echo "❌ Error: pandoc no pudo cargar la configuración de EPUB (-d epub)."
+    echo "   Tiene que existir defaults/epub.yaml dentro de ~/.local/share/pandoc."
+    exit 1
+  fi
 fi
-
-# --- Opciones -----------------------------------------------------------------
-# -y / --yes: no pregunta, convierte directo.
-# -i carpeta / --imagenes carpeta: otra carpeta donde buscar las imágenes. Se
-#   puede repetir (-i una -i otra).
-# zparseopts saca las opciones de los argumentos (-E: en cualquier posición);
-# -F falla con una opción que no existe. Un "--" suelto se descarta (se acepta
-# por costumbre de otros comandos).
-uso="Uso: md2pdf [-y] [-i carpeta_de_imágenes] [archivo.md ...]"
-zparseopts -D -E -F -- y=opcion_y -yes=opcion_y \
-    i+:=opcion_i -imagenes+:=opcion_i 2>/dev/null || {
-  echo "❌ Opción no válida o incompleta. $uso"
-  exit 1
-}
-[[ $1 == -- ]] && shift
 
 # opcion_i queda como pares (-i carpeta -i carpeta ...): se toman las carpetas,
 # se comprueba que existan y se pasan a ruta absoluta.
@@ -213,10 +259,13 @@ if (( ${#archivos[@]} == 0 )); then
   exit 0
 fi
 
-# --- 3. Mostrar qué se va a convertir (el PDF reemplaza la extensión .md) -----
+# --- 3. Mostrar qué se va a convertir (reemplaza la extensión .md) ------------
 echo "Se van a convertir los siguientes archivos:"
 for archivo in "${archivos[@]}"; do
-  echo "  - $archivo -> ${archivo:r}.pdf"
+  destinos=()
+  (( gen_pdf ))  && destinos+=("${archivo:r}.pdf")
+  (( gen_epub )) && destinos+=("${archivo:r}.epub")
+  echo "  - $archivo -> ${(j:, :)destinos}"
 done
 
 # --- 4. Pedir confirmación ----------------------------------------------------
@@ -469,7 +518,124 @@ while (my $linea = <STDIN>) {
 }
 PERL
 
-# --- 5. Ejecutar pandoc y mostrar mensajes por archivo ------------------------
+# --- 5. Verificador automático de calidad PDF ---------------------------------
+read -r -d '' VERIFICAR_PDF <<'PERL'
+use strict; use warnings; use utf8;
+use Encode qw(decode);
+binmode(STDOUT, ":encoding(UTF-8)");
+binmode(STDERR, ":encoding(UTF-8)");
+
+my ($archivo, $pdf, $log_path, $bbox_xml, $img_list) = map { defined $_ ? decode("UTF-8", $_) : $_ } @ARGV;
+my @avisos;
+my @criticos;
+
+# 1. Revisar log de Pandoc/LuaLaTeX
+if (open(my $fh, "<:encoding(UTF-8)", $log_path)) {
+  my ($vbox_n, $vbox_max) = (0, 0);
+  my ($hbox_n, $hbox_max) = (0, 0);
+  my ($missing_n, $float_n, $res_n) = (0, 0, 0);
+  my $sample_missing = "";
+  while (my $l = <$fh>) {
+    if ($l =~ /Overfull \\vbox \(([\d.]+)pt too high\)/) {
+      $vbox_n++;
+      $vbox_max = $1 if $1 > $vbox_max;
+    } elsif ($l =~ /Overfull \\hbox \(([\d.]+)pt too wide\)/) {
+      if ($1 > 12.0) {
+        $hbox_n++;
+        $hbox_max = $1 if $1 > $hbox_max;
+      }
+    } elsif ($l =~ /Missing character: (.+)/) {
+      $missing_n++;
+      $sample_missing = $1 if $sample_missing eq "";
+    } elsif ($l =~ /Float too large for page by ([\d.]+)pt/) {
+      $float_n++;
+    } elsif ($l =~ /\[WARNING\]\s+Could not (?:fetch resource|find image)/i) {
+      $res_n++;
+    }
+  }
+  close($fh);
+  push @criticos, sprintf("LaTeX Overfull \\vbox (%d ocurrencia(s), máx %.1fpt): caja/tabla más alta que la hoja (riesgo de filas recortadas).", $vbox_n, $vbox_max) if $vbox_n;
+  push @criticos, sprintf("LaTeX Float too large (%d ocurrencia(s)): figura supera el alto de página.", $float_n) if $float_n;
+  push @avisos, sprintf("LaTeX Overfull \\hbox > 12pt (%d ocurrencia(s), máx %.1fpt): contenido o código sobresale del margen derecho.", $hbox_n, $hbox_max) if $hbox_n;
+  push @avisos, sprintf("Missing character (%d ocurrencia(s), ej. '%s'): glifo sin fuente de respaldo.", $missing_n, $sample_missing) if $missing_n;
+  push @criticos, sprintf("Pandoc no pudo cargar %d recurso(s)/imagen(es) durante la compilación.", $res_n) if $res_n;
+}
+
+# 2. Revisar geometría real y páginas en blanco si pdftotext -bbox está disponible
+my %has_img;
+if (defined $img_list && -s $img_list && open(my $ih, "<:encoding(UTF-8)", $img_list)) {
+  while (my $l = <$ih>) {
+    if ($l =~ /^\s*(\d+)\s+\d+\s+image\s+(\d+)\s+(\d+)\b/) {
+      $has_img{$1} = 1 if ($2 >= 200 || $3 >= 200);
+    }
+  }
+  close($ih);
+}
+
+if (defined $bbox_xml && -s $bbox_xml && open(my $bh, "<:encoding(UTF-8)", $bbox_xml)) {
+  local $/ = undef;
+  my $xml = <$bh>;
+  close($bh);
+  my $pnum = 0;
+  my (@blank_pages, @bot_pages, @lat_pages);
+  while ($xml =~ m{<page\s+width="([\d.]+)"\s+height="([\d.]+)">(.*?)</page>}gs) {
+    $pnum++;
+    my ($W, $H, $body) = ($1 + 0, $2 + 0, $3);
+    my ($non_digit, $total, $bot_bad, $lat_bad) = (0, 0, 0, 0);
+    while ($body =~ m{<word\s+xMin="(-?[\d.]+)"\s+yMin="(-?[\d.]+)"\s+xMax="(-?[\d.]+)"\s+yMax="(-?[\d.]+)">([^<]*)</word>}g) {
+      my ($x0, $y0, $x1, $y1, $txt) = ($1 + 0, $2 + 0, $3 + 0, $4 + 0, $5);
+      $total++;
+      $non_digit++ unless $txt =~ /^\d+$/;
+      my $is_footer_num = ($txt =~ /^\d{1,4}$/ && $y0 > $H - 55 && $x0 >= $W * 0.38 && $x1 <= $W * 0.62);
+      if (!$is_footer_num && $y1 > $H - 30) {
+        $bot_bad = $y1 if $y1 > $bot_bad;
+      }
+      if ($x1 > $W - 26 || $x0 < 26) {
+        $lat_bad = 1;
+      }
+    }
+    if ($non_digit == 0 && !$has_img{$pnum}) {
+      push @blank_pages, "p.$pnum";
+    }
+    push @bot_pages, sprintf("p.%d (y=%.1f/%.1f)", $pnum, $bot_bad, $H) if $bot_bad;
+    push @lat_pages, "p.$pnum" if $lat_bad;
+  }
+  push @criticos, "Página(s) en blanco o solo con número de página: " . join(", ", @blank_pages) if @blank_pages;
+  push @criticos, "Invasión del pie/borde inferior (contenido probablemente cortado): " . join(", ", @bot_pages) if @bot_pages;
+  push @avisos, "Desborde lateral extremo fuera de márgenes: " . join(", ", @lat_pages) if @lat_pages;
+}
+
+if (@criticos || @avisos) {
+  print STDERR "⚠️  AVISO DE CALIDAD PDF ($archivo -> $pdf):\n";
+  for my $m (@criticos) { print STDERR "   ❌ [CRÍTICO] $m\n"; }
+  for my $m (@avisos)   { print STDERR "   ⚠️  [AVISO]   $m\n"; }
+  exit(@criticos ? 2 : 1);
+}
+exit 0;
+PERL
+
+verificar_calidad_pdf() {
+  local archivo="$1" salida_pdf="$2" log_pandoc="$3"
+  (( pdf_check )) || return 0
+  local bbox_tmp="" img_tmp="" reporte="" rc=0
+  if (( $+commands[pdftotext] )); then
+    bbox_tmp="$(mktemp --suffix=.xml)"
+    pdftotext -bbox "$salida_pdf" "$bbox_tmp" 2>/dev/null || true
+  fi
+  if (( $+commands[pdfimages] )); then
+    img_tmp="$(mktemp --suffix=.txt)"
+    pdfimages -list "$salida_pdf" > "$img_tmp" 2>/dev/null || true
+  fi
+  reporte="$(perl -CSD -e "$VERIFICAR_PDF" "$archivo" "$salida_pdf" "$log_pandoc" "$bbox_tmp" "$img_tmp" 2>&1)" || rc=$?
+  rm -f -- ${bbox_tmp:+"$bbox_tmp"} ${img_tmp:+"$img_tmp"}
+  if (( rc != 0 )); then
+    printf '%s\n' "$reporte" >&2
+    avisos_calidad+=("$archivo")
+  fi
+  return "$rc"
+}
+
+# --- 6. Ejecutar pandoc y mostrar mensajes por archivo ------------------------
 # Si uno falla, se sigue con los demás. "--" va antes del archivo por si algún
 # nombre empieza con "-" (si no, pandoc lo tomaría por una opción).
 #
@@ -483,52 +649,76 @@ PERL
 # carpeta temporal); las imágenes normales se siguen buscando en la carpeta
 # del .md gracias a --resource-path.
 fallidos=()
+avisos_calidad=()
 temporal=""
+log_pandoc=""
 # Borrar la copia temporal al salir, también si se cancela con Ctrl+C.
-trap 'rm -f -- ${temporal:+"$temporal"}' EXIT
+trap 'rm -f -- ${temporal:+"$temporal"} ${log_pandoc:+"$log_pandoc"}' EXIT
 trap 'echo; echo "Cancelado."; exit 130' INT TERM HUP
 for archivo in "${archivos[@]}"; do
-  salida="${archivo:r}.pdf"
+  salida_pdf="${archivo:r}.pdf"
+  salida_epub="${archivo:r}.epub"
   entrada="$archivo"
   temporal=""
+  log_pandoc=""
   # Un .md que no está en UTF-8 (por ejemplo, en Latin-1, de un editor viejo
   # de Windows) no se traduce: perl lo leería mal. Pandoc lo convierte igual
   # (lo lee como Latin-1), y se avisa cómo pasarlo a UTF-8.
   if ! iconv -f UTF-8 -t UTF-8 -- "$archivo" >/dev/null 2>&1; then
     echo "⚠️ '$archivo' no está en UTF-8: se convierte sin traducir la sintaxis de Obsidian."
     echo "   Para pasarlo a UTF-8: iconv -f latin1 -t utf-8 -- \"$archivo\" > nuevo.md"
-    rutas=("${archivo:h}" "${carpetas_imagenes[@]}" ".")
-    if pandoc -d estilo --resource-path="${(j.:.)rutas}" --output="$salida" -- "$archivo" 2>/dev/null; then
-      echo "✔ Generado: $salida"
-    else
-      echo "❌ Error al convertir: $archivo"
-      fallidos+=("$archivo")
-    fi
-    continue
-  fi
-  # Se traduce siempre en una copia temporal, pero pandoc la lee solo si
-  # cambió algo; si no, lee el .md original (como antes).
-  temporal="$(mktemp --suffix=.md)"
-  if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
-       IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR" < "$archivo" > "$temporal"; then
-    echo "❌ Error al traducir la sintaxis que pandoc no entiende: $archivo"
-    fallidos+=("$archivo"); rm -f "$temporal"; temporal=""; continue
-  fi
-  if cmp -s -- "$archivo" "$temporal"; then
-    rm -f -- "$temporal"; temporal=""
   else
-    entrada="$temporal"
+    # Se traduce siempre en una copia temporal, pero pandoc la lee solo si
+    # cambió algo; si no, lee el .md original (como antes).
+    temporal="$(mktemp --suffix=.md)"
+    if ! CARPETA_MD="${archivo:h:A}" BASE="$(carpeta_de_busqueda "${archivo:h}")" \
+         IMAGENES="${(F)carpetas_imagenes}" perl -CSD -e "$TRADUCIR" < "$archivo" > "$temporal"; then
+      echo "❌ Error al traducir la sintaxis que pandoc no entiende: $archivo"
+      fallidos+=("$archivo"); rm -f "$temporal"; temporal=""; continue
+    fi
+    if cmp -s -- "$archivo" "$temporal"; then
+      rm -f -- "$temporal"; temporal=""
+    else
+      entrada="$temporal"
+    fi
   fi
   rutas=("${archivo:h}" "${carpetas_imagenes[@]}" ".")
-  if pandoc -d estilo --resource-path="${(j.:.)rutas}" --output="$salida" -- "$entrada"; then
-    echo "✔ Generado: $salida"
-  else
-    echo "❌ Error al convertir: $archivo"
-    fallidos+=("$archivo")
+  if (( gen_pdf )); then
+    log_pandoc="$(mktemp --suffix=.log)"
+    if pandoc --verbose -d estilo --resource-path="${(j.:.)rutas}" --output="$salida_pdf" -- "$entrada" 2>"$log_pandoc"; then
+      echo "✔ Generado: $salida_pdf"
+      calidad_rc=0
+      verificar_calidad_pdf "$archivo" "$salida_pdf" "$log_pandoc" || calidad_rc=$?
+      if (( strict_pdf && calidad_rc != 0 )); then
+        echo "❌ Rechazado por --strict-pdf debido a avisos de maquetación: $salida_pdf" >&2
+        fallidos+=("$archivo (PDF calidad)")
+      fi
+    else
+      cat "$log_pandoc" >&2
+      echo "❌ Error al convertir a PDF: $archivo"
+      fallidos+=("$archivo")
+    fi
+    rm -f "$log_pandoc"
+    log_pandoc=""
+  fi
+  if (( gen_epub )); then
+    extra_epub=()
+    if ! awk 'NR==1 && /^---$/ {in_y=1; next} in_y && /^(---|\.\.\.)$/ {exit} in_y && /^title:/ {found=1; exit} END {exit !found}' "$entrada"; then
+      extra_epub+=(--metadata="title=${archivo:t:r}")
+    fi
+    if pandoc -d epub "${extra_epub[@]}" --resource-path="${(j.:.)rutas}" --output="$salida_epub" -- "$entrada"; then
+      echo "✔ Generado: $salida_epub"
+    else
+      echo "❌ Error al convertir a EPUB: $archivo"
+      fallidos+=("$archivo (EPUB)")
+    fi
   fi
   [[ -n $temporal ]] && rm -f "$temporal"
 done
 
+if (( ${#avisos_calidad[@]} > 0 )); then
+  echo "⚠️ Se detectaron avisos de calidad PDF en ${#avisos_calidad[@]} archivo(s): ${(j:, :)avisos_calidad}" >&2
+fi
 if (( ${#fallidos[@]} > 0 )); then
   echo "⚠️ No se pudieron convertir ${#fallidos[@]} archivo(s): ${(j:, :)fallidos}"
   exit 1

@@ -143,7 +143,7 @@ pandoc --version | grep -i "user data"
 ```
 Tiene que mostrar `/home/tu_usuario/.local/share/pandoc`. Si muestra `~/.pandoc`, es porque `~/.local/share/pandoc` no existe: pandoc usa esa carpeta vieja solo en ese caso.
 
-Antes de convertir nada, `md2pdf` comprueba que estén `pandoc` y `lualatex` y que `-d estilo` se pueda cargar. Si falta algo, te lo dice una sola vez con cómo arreglarlo. Para cambiar cómo se ven los PDF se edita el repositorio Pandoc config, no el script.
+Antes de convertir nada (y antes de pedir confirmación), `md2pdf` comprueba que estén `pandoc`, `perl`, `lualatex`, que `-d estilo` se pueda cargar y que estén instalados los paquetes de TeX Live que requiere el estilo (`texlive-luatex`, `texlive-lang-spanish`, `texlive-latex-recommended`, `texlive-latex-extra` y `lmodern`). Si falta alguna dependencia obligatoria, frena una sola vez mostrándote qué faltó y el comando exacto de `sudo apt install` para resolverlo; también avisa si falta alguna fuente de respaldo (`fonts-noto-color-emoji`, `fonts-dejavu-core`, `fonts-dejavu-mono`) y, si LaTeX igual falla por un paquete pedido en una nota puntual, resume la causa al final del log. Para cambiar cómo se ven los PDF se edita el repositorio Pandoc config, no el script.
 
 ---
 

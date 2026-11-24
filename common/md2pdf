@@ -122,7 +122,12 @@
 # DEPENDENCIAS REQUERIDAS:
 #   - zsh (El script está escrito específicamente para Z shell)
 #   - pandoc y lualatex, con los paquetes de LaTeX y las fuentes que usa el
-#     estilo (la lista completa está en el README del repositorio Pandoc config)
+#     estilo (la lista completa está en el README del repositorio Pandoc config).
+#     Antes de pedir confirmación o convertir nada, el script comprueba con
+#     kpsewhich los paquetes de TeX Live necesarios (texlive-luatex,
+#     texlive-lang-spanish, texlive-latex-recommended, texlive-latex-extra y
+#     lmodern) y, si está fc-list, avisa si falta alguna fuente de respaldo
+#     (Noto Color Emoji, DejaVu Sans, DejaVu Sans Mono).
 #   - El repositorio Pandoc config instalado en la carpeta de datos de pandoc
 #     (para comprobarlo: pandoc --version | grep -i "user data")
 #   - cmp (paquete diffutils, viene instalado), para ver si la copia
@@ -136,7 +141,7 @@
 #     git es opcional: si está, se usa para encontrar la raíz del repositorio.
 #
 # Instalación de dependencias en Debian/Ubuntu:
-#   sudo apt install zsh pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji fonts-dejavu-core fonts-dejavu-mono poppler-utils
+#   sudo apt install zsh pandoc texlive-luatex texlive-lang-spanish texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji fonts-dejavu-core fonts-dejavu-mono poppler-utils
 # ==============================================================================
 
 # extended_glob: permite el patrón *.(#i)(md|markdown)(N.) de más abajo.
@@ -174,40 +179,150 @@ strict_pdf=$(( $#opcion_strict ? 1 : 0 ))
 
 # --- Comprobaciones previas ---------------------------------------------------
 # Se hacen antes de pedir nada, para fallar una sola vez y con un mensaje claro
-# (si no, cada archivo fallaría por separado con el mismo error).
+# (si no, cada archivo fallaría por separado con el mismo error o con un log
+# críptico de LuaLaTeX).
+
+typeset -a errores_deps=()
+typeset -a avisos_deps=()
+typeset -aU paquetes_apt=()
+typeset -aU paquetes_apt_opt=()
 
 if (( ! $+commands[pandoc] )); then
-  echo "❌ Error: pandoc no está instalado. Instalalo con:"
-  echo "   sudo apt install pandoc texlive-luatex texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern fonts-noto-color-emoji"
-  exit 1
+  errores_deps+=("pandoc: no está instalado.")
+  paquetes_apt+=(pandoc)
+fi
+
+if (( ! $+commands[perl] )); then
+  errores_deps+=("perl: no está instalado (se usa para traducir sintaxis y revisar el PDF).")
+  paquetes_apt+=(perl)
 fi
 
 if (( gen_pdf )); then
   if (( ! $+commands[lualatex] )); then
-    echo "❌ Error: lualatex no está instalado (lo usa el estilo de los PDF). Instalalo con:"
-    echo "   sudo apt install texlive-luatex"
-    exit 1
+    errores_deps+=("lualatex: no está instalado (es el motor LaTeX que usa el estilo de los PDF).")
+    paquetes_apt+=(texlive-luatex texlive-lang-spanish texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended lmodern)
+  elif (( $+commands[kpsewhich] )); then
+    # Aunque exista el binario lualatex (que viene en texlive-binaries), sin los
+    # paquetes de TeX Live que usa el estilo LuaLaTeX falla con errores difíciles
+    # de leer (ej. "module 'luaotfload-main' not found" o "Unknown option 'spanish'").
+    # Una sola llamada a kpsewhich comprueba todos los archivos en ~30 ms.
+    tex_archivos=(
+      luaotfload-main.lua
+      spanish.ldf
+      fvextra.sty
+      enumitem.sty
+      float.sty
+      caption.sty
+      booktabs.sty
+      fontspec.sty
+      lmodern.sty
+      lmroman10-regular.otf
+    )
+    typeset -A tex_ok=()
+    idx=1
+    while IFS= read -r linea; do
+      tex_ok[${tex_archivos[idx]}]="$linea"
+      (( idx++ ))
+    done < <(kpsewhich "${tex_archivos[@]}" 2>/dev/null)
+
+    if [[ -z ${tex_ok[luaotfload-main.lua]} ]]; then
+      errores_deps+=("Soporte de fuentes de LuaLaTeX (luaotfload-main.lua): falta el paquete texlive-luatex.")
+      paquetes_apt+=(texlive-luatex)
+    fi
+    if [[ -z ${tex_ok[spanish.ldf]} ]]; then
+      errores_deps+=("Soporte de español para babel (spanish.ldf, usado por 'lang: es'): falta el paquete texlive-lang-spanish.")
+      paquetes_apt+=(texlive-lang-spanish)
+    fi
+    faltan_extra=()
+    [[ -z ${tex_ok[fvextra.sty]} ]]  && faltan_extra+=(fvextra.sty)
+    [[ -z ${tex_ok[enumitem.sty]} ]] && faltan_extra+=(enumitem.sty)
+    if (( $#faltan_extra > 0 )); then
+      errores_deps+=("Paquetes de LaTeX (${(j:, :)faltan_extra}): falta texlive-latex-extra.")
+      paquetes_apt+=(texlive-latex-extra)
+    fi
+    faltan_rec=()
+    for f in float.sty caption.sty booktabs.sty fontspec.sty; do
+      [[ -z ${tex_ok[$f]} ]] && faltan_rec+=("$f")
+    done
+    if (( $#faltan_rec > 0 )); then
+      errores_deps+=("Paquetes recomendados de LaTeX (${(j:, :)faltan_rec}): falta texlive-latex-recommended.")
+      paquetes_apt+=(texlive-latex-recommended)
+    fi
+    if [[ -z ${tex_ok[lmodern.sty]} || -z ${tex_ok[lmroman10-regular.otf]} ]]; then
+      errores_deps+=("Fuente base Latin Modern (lmodern): faltan lmodern / texlive-fonts-recommended.")
+      paquetes_apt+=(lmodern texlive-fonts-recommended)
+    fi
   fi
 
+  # Comprobar fuentes de respaldo usadas por estilo.tex (aviso no bloqueante:
+  # sin ellas el PDF igual se genera, pero pueden faltar emojis o símbolos).
+  if (( $+commands[fc-list] )); then
+    fuentes_sistema="$(fc-list : family 2>/dev/null | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if ! print -r -- "$fuentes_sistema" | grep -Fxiq "Noto Color Emoji"; then
+      avisos_deps+=("Noto Color Emoji (emojis a color) → paquete fonts-noto-color-emoji")
+      paquetes_apt_opt+=(fonts-noto-color-emoji)
+    fi
+    if ! print -r -- "$fuentes_sistema" | grep -Fxiq "DejaVu Sans"; then
+      avisos_deps+=("DejaVu Sans (símbolos como ✓, →, ∈) → paquete fonts-dejavu-core")
+      paquetes_apt_opt+=(fonts-dejavu-core)
+    fi
+    if ! print -r -- "$fuentes_sistema" | grep -Fxiq "DejaVu Sans Mono"; then
+      avisos_deps+=("DejaVu Sans Mono (árboles ├─ │ └ en código) → paquete fonts-dejavu-mono")
+      paquetes_apt_opt+=(fonts-dejavu-mono)
+    fi
+  fi
+fi
+
+if (( $#errores_deps > 0 )); then
+  echo "❌ Faltan dependencias obligatorias para ejecutar md2pdf:" >&2
+  for err in "${errores_deps[@]}"; do
+    echo "   • $err" >&2
+  done
+  if (( $#paquetes_apt > 0 )); then
+    echo "" >&2
+    echo "   Instalalas en Debian/Ubuntu con:" >&2
+    echo "     sudo apt install ${(j: :)paquetes_apt}" >&2
+  fi
+  if (( $#avisos_deps > 0 )); then
+    echo "" >&2
+    echo "   Además faltan fuentes opcionales de respaldo:" >&2
+    for av in "${avisos_deps[@]}"; do
+      echo "   • $av" >&2
+    done
+    echo "   (Podés sumarlas al comando anterior: ${(j: :)paquetes_apt_opt})" >&2
+  fi
+  exit 1
+fi
+
+if (( $#avisos_deps > 0 )); then
+  echo "⚠️  Faltan fuentes de respaldo del estilo (el PDF se genera igual, pero pueden faltar emojis o símbolos):" >&2
+  for av in "${avisos_deps[@]}"; do
+    echo "   • $av" >&2
+  done
+  echo "   Instalalas en Debian/Ubuntu con:" >&2
+  echo "     sudo apt install ${(j: :)paquetes_apt_opt}" >&2
+fi
+
+if (( gen_pdf )); then
   # Se comprueba que "-d estilo" se pueda cargar: convierte un texto vacío a texto
   # plano (no genera ningún PDF). Falla si pandoc no encuentra defaults/estilo.yaml
   # en su carpeta de datos o si ese archivo apunta a otro que no existe.
   if ! echo "" | pandoc -d estilo -t plain -o /dev/null 2>/dev/null; then
-    echo "❌ Error: pandoc no pudo cargar la configuración de estilo (-d estilo)."
-    echo "   Tiene que existir defaults/estilo.yaml dentro de la carpeta de datos de"
-    echo "   pandoc. Para ver cuál es esa carpeta:"
-    echo "     pandoc --version | grep -i \"user data\""
-    echo "   Tiene que ser ~/.local/share/pandoc. Si muestra ~/.pandoc, es porque"
-    echo "   ~/.local/share/pandoc no existe (pandoc usa la carpeta vieja solo en"
-    echo "   ese caso)."
+    echo "❌ Error: pandoc no pudo cargar la configuración de estilo (-d estilo)." >&2
+    echo "   Tiene que existir defaults/estilo.yaml dentro de la carpeta de datos de" >&2
+    echo "   pandoc. Para ver cuál es esa carpeta:" >&2
+    echo "     pandoc --version | grep -i \"user data\"" >&2
+    echo "   Tiene que ser ~/.local/share/pandoc. Si muestra ~/.pandoc, es porque" >&2
+    echo "   ~/.local/share/pandoc no existe (pandoc usa la carpeta vieja solo en" >&2
+    echo "   ese caso)." >&2
     exit 1
   fi
 fi
 
 if (( gen_epub )); then
   if ! echo "" | pandoc -d epub -t plain -o /dev/null 2>/dev/null; then
-    echo "❌ Error: pandoc no pudo cargar la configuración de EPUB (-d epub)."
-    echo "   Tiene que existir defaults/epub.yaml dentro de ~/.local/share/pandoc."
+    echo "❌ Error: pandoc no pudo cargar la configuración de EPUB (-d epub)." >&2
+    echo "   Tiene que existir defaults/epub.yaml dentro de ~/.local/share/pandoc." >&2
     exit 1
   fi
 fi
@@ -635,6 +750,56 @@ verificar_calidad_pdf() {
   return "$rc"
 }
 
+# --- 5b. Diagnóstico legible cuando Pandoc/LuaLaTeX falla ---------------------
+# Si la compilación falla por un paquete o fuente que no estaba en la lista base
+# (por ejemplo, una nota que pide otro idioma en babel o un \usepackage propio),
+# resume la causa real al final del log para no tener que buscarla entre cientos
+# de líneas de salida de LaTeX.
+diagnosticar_error_pandoc() {
+  local log_path="$1"
+  [[ -s $log_path ]] || return 0
+  perl -CSD - "$log_path" <<'PERL' >&2
+use strict; use warnings; use utf8;
+open(my $fh, "<:encoding(UTF-8)", $ARGV[0]) or exit 0;
+local $/ = undef;
+my $log = <$fh>;
+close($fh);
+
+my @pistas;
+my %visto;
+my $agregar = sub {
+  my ($msg) = @_;
+  return if $visto{$msg}++;
+  push @pistas, $msg;
+};
+
+if ($log =~ /module 'luaotfload-main' not found/) {
+  $agregar->("Falta el soporte de fuentes de LuaLaTeX (luaotfload). Instalalo con: sudo apt install texlive-luatex");
+}
+while ($log =~ /Package babel Error:\s*Unknown option '([^']+)'/g) {
+  my $lang = $1;
+  my $sug = $lang eq "spanish" ? "sudo apt install texlive-lang-spanish" : "el paquete texlive-lang-* correspondiente a '$lang'";
+  $agregar->("Falta el idioma '$lang' para babel ($sug).");
+}
+while ($log =~ /File [`']([^'`]+\.(?:sty|cls|ldf|def))' not found/g) {
+  my $f = $1;
+  $agregar->("Falta el archivo de LaTeX '$f' (buscá qué paquete lo provee o probá instalar texlive-latex-extra / texlive-science).");
+}
+while ($log =~ /The font "([^"]+)" cannot be found/g) {
+  my $font = $1;
+  $agregar->("No se encontró la fuente '$font'. Comprobá su nombre instalado con: fc-list | grep -i \"$font\"");
+}
+if ($log =~ /Font [^\n=]+=\[lmroman[^\]]*\][^\n]*not loadable/) {
+  $agregar->("No se pudo cargar la fuente base Latin Modern. Instalala con: sudo apt install lmodern texlive-fonts-recommended");
+}
+
+if (@pistas) {
+  print "\n💡 Posible causa detectada en el log de LaTeX:\n";
+  for my $p (@pistas) { print "   • $p\n"; }
+}
+PERL
+}
+
 # --- 6. Ejecutar pandoc y mostrar mensajes por archivo ------------------------
 # Si uno falla, se sigue con los demás. "--" va antes del archivo por si algún
 # nombre empieza con "-" (si no, pandoc lo tomaría por una opción).
@@ -695,7 +860,8 @@ for archivo in "${archivos[@]}"; do
       fi
     else
       cat "$log_pandoc" >&2
-      echo "❌ Error al convertir a PDF: $archivo"
+      diagnosticar_error_pandoc "$log_pandoc"
+      echo "❌ Error al convertir a PDF: $archivo" >&2
       fallidos+=("$archivo")
     fi
     rm -f "$log_pandoc"
